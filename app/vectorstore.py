@@ -1,10 +1,34 @@
 import os
-from langchain.schema import Document
+import hashlib
+from collections import OrderedDict
+from langchain_core.documents import Document
 from sentence_transformers import SentenceTransformer
 import chromadb
 from dotenv import load_dotenv
 
 load_dotenv()
+
+# ── Embedding Cache ──────────────────────────────────────────
+# WHY cache embeddings? The same query often appears multiple times
+# (retries, similar questions, eval runs). Embedding is CPU-bound
+# (~50ms per query). An LRU cache avoids redundant computation.
+_CACHE_MAX = 512
+_embed_cache: OrderedDict[str, list[float]] = OrderedDict()
+_cache_stats = {"hits": 0, "misses": 0}
+
+
+def get_cache_stats() -> dict:
+    """Return embedding cache hit/miss stats for /metrics."""
+    total = _cache_stats["hits"] + _cache_stats["misses"]
+    return {
+        "embedding_cache_hits": _cache_stats["hits"],
+        "embedding_cache_misses": _cache_stats["misses"],
+        "embedding_cache_hit_rate": round(
+            _cache_stats["hits"] / total, 4
+        ) if total > 0 else 0.0,
+        "embedding_cache_size": len(_embed_cache),
+    }
+
 
 class VectorStore:
     def __init__(self, collection_name: str = "devdocs"):
@@ -18,6 +42,21 @@ class VectorStore:
             name=collection_name,
             metadata={"hnsw:space": "cosine"}
         )
+
+    def _cached_encode(self, text: str) -> list[float]:
+        """Encode a single text with LRU cache."""
+        key = hashlib.md5(text.encode()).hexdigest()
+        if key in _embed_cache:
+            _cache_stats["hits"] += 1
+            _embed_cache.move_to_end(key)  # mark as recently used
+            return _embed_cache[key]
+
+        _cache_stats["misses"] += 1
+        embedding = self.embedder.encode([text]).tolist()[0]
+        _embed_cache[key] = embedding
+        if len(_embed_cache) > _CACHE_MAX:
+            _embed_cache.popitem(last=False)  # evict oldest
+        return embedding
 
     def upsert(self, docs: list[Document]) -> int:
         """Embed and store documents. Returns count added."""
@@ -44,11 +83,11 @@ class VectorStore:
             metadatas=metadatas
         )
         return len(docs)
-    
+
     def query(self, text: str, k: int = 5,
              file_type: str = None) -> list[dict]:
         """Query by semantic similarity, optional file_type filter."""
-        q_embed = self.embedder.encode([text]).tolist()
+        q_embed = [self._cached_encode(text)]
         where = {"file_type": file_type} if file_type else None
         results = self.collection.query(
             query_embeddings=q_embed,
