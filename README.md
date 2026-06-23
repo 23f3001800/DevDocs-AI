@@ -2,7 +2,7 @@
 
 **RAG over any GitHub repo or docs site — built for developers who want instant, grounded answers from their codebase.**
 
-[![CI/CD](https://github.com/YOUR_USERNAME/DevDocs-AI/actions/workflows/ci.yml/badge.svg)](https://github.com/YOUR_USERNAME/DevDocs-AI/actions)
+[![CI/CD](https://github.com/23f3001800/DevDocs-AI/actions/workflows/ci.yml/badge.svg)](https://github.com/23f3001800/DevDocs-AI/actions)
 [![Docker](https://img.shields.io/badge/docker-ready-blue?logo=docker)](Dockerfile)
 [![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue?logo=python)](https://python.org)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
@@ -77,7 +77,7 @@ graph TB
 ### 1. Clone & Install
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/DevDocs-AI.git
+git clone https://github.com/23f3001800/DevDocs-AI.git
 cd DevDocs-AI
 python3 -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
@@ -157,14 +157,19 @@ curl -X POST http://localhost:8000/ask \
 
 ## RAGAS Evaluation Scores
 
-| Metric | Score | Threshold |
-|--------|-------|-----------|
-| Faithfulness | — | ≥ 0.75 |
-| Answer Relevancy | — | ≥ 0.75 |
-| Context Precision | — | ≥ 0.75 |
-| **Average** | — | **≥ 0.75** |
+Every push to `main` triggers the RAGAS eval gate in CI. Deploys are blocked if the average score falls below **0.75**.
 
-> Run `python -m scripts.run_evals` to generate scores. Results saved to `docs/evaluation/ragas_results.json`.
+| Metric | Threshold | Description |
+|--------|-----------|-------------|
+| Faithfulness | ≥ 0.75 | Is the answer grounded in the retrieved context? |
+| Answer Relevancy | ≥ 0.75 | Does the answer address the question? |
+| Context Precision | ≥ 0.75 | Are the retrieved chunks relevant? |
+
+```bash
+# Generate scores locally
+python -m scripts.run_evals
+# Results → docs/evaluation/ragas_results.json
+```
 
 ---
 
