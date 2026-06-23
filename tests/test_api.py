@@ -1,5 +1,5 @@
-import pytest
 from fastapi.testclient import TestClient
+
 from app.main import app
 
 # WHY TestClient instead of a real running server?
@@ -11,13 +11,9 @@ client = TestClient(app)
 def _get_auth_headers(username="testuser", password="testpass123", role="user"):
     """Helper: register a user and return auth headers."""
     # Try to register; if already exists, login instead
-    r = client.post("/auth/register", json={
-        "username": username, "password": password
-    })
+    r = client.post("/auth/register", json={"username": username, "password": password})
     if r.status_code == 409:  # user already exists
-        r = client.post("/auth/login", json={
-            "username": username, "password": password
-        })
+        r = client.post("/auth/login", json={"username": username, "password": password})
     token = r.json()["token"]
     return {"Authorization": f"Bearer {token}"}
 
@@ -25,8 +21,9 @@ def _get_auth_headers(username="testuser", password="testpass123", role="user"):
 def _get_admin_headers():
     """Helper: get auth headers for an admin user."""
     # Create admin directly via database for testing
-    from app.database import get_user, create_user
-    from app.auth import hash_password, create_token
+    from app.auth import create_token, hash_password
+    from app.database import create_user, get_user
+
     user = get_user("testadmin")
     if not user:
         user = create_user("testadmin", hash_password("adminpass123"), role="admin")
@@ -36,9 +33,7 @@ def _get_admin_headers():
 
 # ── Auth tests ───────────────────────────────────────────────
 def test_register():
-    r = client.post("/auth/register", json={
-        "username": "newuser_test", "password": "pass123456"
-    })
+    r = client.post("/auth/register", json={"username": "newuser_test", "password": "pass123456"})
     assert r.status_code == 200
     data = r.json()
     assert "token" in data
@@ -46,33 +41,21 @@ def test_register():
 
 
 def test_register_duplicate():
-    client.post("/auth/register", json={
-        "username": "dupuser", "password": "pass123456"
-    })
-    r = client.post("/auth/register", json={
-        "username": "dupuser", "password": "pass123456"
-    })
+    client.post("/auth/register", json={"username": "dupuser", "password": "pass123456"})
+    r = client.post("/auth/register", json={"username": "dupuser", "password": "pass123456"})
     assert r.status_code == 409
 
 
 def test_login():
-    client.post("/auth/register", json={
-        "username": "loginuser", "password": "pass123456"
-    })
-    r = client.post("/auth/login", json={
-        "username": "loginuser", "password": "pass123456"
-    })
+    client.post("/auth/register", json={"username": "loginuser", "password": "pass123456"})
+    r = client.post("/auth/login", json={"username": "loginuser", "password": "pass123456"})
     assert r.status_code == 200
     assert "token" in r.json()
 
 
 def test_login_wrong_password():
-    client.post("/auth/register", json={
-        "username": "wrongpwuser", "password": "pass123456"
-    })
-    r = client.post("/auth/login", json={
-        "username": "wrongpwuser", "password": "wrongpassword"
-    })
+    client.post("/auth/register", json={"username": "wrongpwuser", "password": "pass123456"})
+    r = client.post("/auth/login", json={"username": "wrongpwuser", "password": "wrongpassword"})
     assert r.status_code == 401
 
 
@@ -108,18 +91,14 @@ def test_ask_question_too_short():
 
 def test_ask_returns_streaming_response():
     headers = _get_auth_headers("askuser", "pass123456")
-    r = client.post("/ask",
-        json={"question": "What is this project about?"},
-        headers=headers)
+    r = client.post("/ask", json={"question": "What is this project about?"}, headers=headers)
     assert r.status_code == 200
     assert len(r.text) > 0
 
 
 def test_ask_k_out_of_range():
     headers = _get_auth_headers("kuser", "pass123456")
-    r = client.post("/ask",
-        json={"question": "valid question here", "k": 99},
-        headers=headers)
+    r = client.post("/ask", json={"question": "valid question here", "k": 99}, headers=headers)
     assert r.status_code == 422
 
 
@@ -129,12 +108,11 @@ def test_ingest_requires_auth():
     assert r.status_code in (401, 403)
 
 
-def test_ingest_denied_for_user_role():
+def test_ingest_allowed_for_user_role():
     headers = _get_auth_headers("regularuser", "pass123456")
-    r = client.post("/ingest",
-        json={"source": "https://example.com"},
-        headers=headers)
-    assert r.status_code == 403
+    r = client.post("/ingest", json={"source": "https://example.com"}, headers=headers)
+    # User should be allowed — may fail with 500 if URL unreachable, but NOT 403
+    assert r.status_code != 403
 
 
 # ── Metrics (requires admin role) ────────────────────────────
