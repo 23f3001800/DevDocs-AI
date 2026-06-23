@@ -5,7 +5,11 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 from ragas import EvaluationDataset, SingleTurnSample, evaluate
-from ragas.metrics import AnswerRelevancy, ContextPrecision, Faithfulness
+from ragas.metrics.collections import (
+    AnswerRelevancy,
+    ContextPrecision,
+    Faithfulness,
+)
 
 from app.chain import ask
 from app.hybrid_retriever import HybridRetriever
