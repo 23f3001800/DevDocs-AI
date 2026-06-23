@@ -32,6 +32,8 @@ langsmith>=0.1.0
 ragas>=0.2.0
 datasets>=2.19.0
 langchain-google-genai>=2.0.0
+langchain-google-vertexai>=2.0.0
+langchain-text-splitters>=0.3.0
 
 # Testing + linting
 pytest>=8.0.0
