@@ -6,6 +6,7 @@ instance. If chain.py creates one at import time AND main.py creates another
 in lifespan(), we waste ~400MB RAM (2x CrossEncoder + 2x BM25 index).
 This module provides one instance, initialized once, used everywhere.
 """
+
 import threading
 import time
 
@@ -20,6 +21,7 @@ def get_retriever():
         with _lock:
             if _retriever is None:  # double-check locking
                 from app.hybrid_retriever import HybridRetriever
+
                 _retriever = HybridRetriever()
     return _retriever
 

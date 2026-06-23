@@ -1,11 +1,15 @@
-import json, os, sys
+import json
+import os
+import sys
 from pathlib import Path
-from ragas import evaluate, EvaluationDataset, SingleTurnSample
-from ragas.metrics import Faithfulness, AnswerRelevancy, ContextPrecision
+
+from dotenv import load_dotenv
+from ragas import EvaluationDataset, SingleTurnSample, evaluate
+from ragas.metrics import AnswerRelevancy, ContextPrecision, Faithfulness
 
 from app.chain import ask
 from app.hybrid_retriever import HybridRetriever
-from dotenv import load_dotenv
+
 load_dotenv()
 
 
@@ -19,19 +23,22 @@ def run_evals(threshold: float = 0.75) -> dict:
         q = item["question"]
         print(f"Evaluating: {q[:60]}...")
         chunks = retriever.retrieve(q, k=4)
-        resp   = ask(q)
+        resp = ask(q)
 
-        samples.append(SingleTurnSample(
-            user_input=q,
-            response=resp.answer,
-            retrieved_contexts=[c["content"] for c in chunks],
-            reference=item["ground_truth"],
-        ))
+        samples.append(
+            SingleTurnSample(
+                user_input=q,
+                response=resp.answer,
+                retrieved_contexts=[c["content"] for c in chunks],
+                reference=item["ground_truth"],
+            )
+        )
 
     dataset = EvaluationDataset(samples=samples)
 
     # Use Gemini as the evaluator LLM (separate from Claude used for answering)
     from langchain_google_genai import ChatGoogleGenerativeAI
+
     evaluator_llm = ChatGoogleGenerativeAI(
         model="gemini-2.5-flash",
         google_api_key=os.getenv("GOOGLE_API_KEY"),
@@ -49,8 +56,8 @@ def run_evals(threshold: float = 0.75) -> dict:
     )
 
     scores = {
-        "faithfulness":      round(float(result["faithfulness"]),      4),
-        "answer_relevancy":  round(float(result["answer_relevancy"]),  4),
+        "faithfulness": round(float(result["faithfulness"]), 4),
+        "answer_relevancy": round(float(result["answer_relevancy"]), 4),
         "context_precision": round(float(result["context_precision"]), 4),
     }
 
@@ -75,6 +82,7 @@ def run_evals(threshold: float = 0.75) -> dict:
 
     print(f"\n✅ Eval gate passed — {avg:.4f} ≥ {threshold}")
     return scores
+
 
 if __name__ == "__main__":
     run_evals()

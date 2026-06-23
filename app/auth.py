@@ -11,13 +11,13 @@ WHY JWT instead of session cookies? Stateless auth — no server-side
 session store needed. The frontend stores the token in localStorage
 and sends it as Authorization: Bearer <token> on every request.
 """
+
 import os
-from datetime import datetime, timedelta, timezone
-from functools import lru_cache
+from datetime import UTC, datetime, timedelta
 
 import bcrypt
 import jwt
-from fastapi import Depends, HTTPException, Request
+from fastapi import Depends, HTTPException
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field
 
@@ -62,8 +62,8 @@ def create_token(username: str, role: str) -> str:
     payload = {
         "sub": username,
         "role": role,
-        "exp": datetime.now(timezone.utc) + timedelta(hours=JWT_EXPIRY_HOURS),
-        "iat": datetime.now(timezone.utc),
+        "exp": datetime.now(UTC) + timedelta(hours=JWT_EXPIRY_HOURS),
+        "iat": datetime.now(UTC),
     }
     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
 
@@ -98,15 +98,13 @@ def require_role(minimum_role: str):
     - require_role("user")  → allows user AND admin
     - require_role("admin") → allows admin ONLY
     """
-    ROLE_LEVEL = {"user": 1, "admin": 2}
+    role_level = {"user": 1, "admin": 2}
 
     def dependency(user: dict = Depends(get_current_user)) -> dict:
-        user_level = ROLE_LEVEL.get(user["role"], 0)
-        required_level = ROLE_LEVEL.get(minimum_role, 0)
+        user_level = role_level.get(user["role"], 0)
+        required_level = role_level.get(minimum_role, 0)
         if user_level < required_level:
-            raise HTTPException(
-                403, f"Requires '{minimum_role}' role — you have '{user['role']}'"
-            )
+            raise HTTPException(403, f"Requires '{minimum_role}' role — you have '{user['role']}'")
         return user
 
     return dependency

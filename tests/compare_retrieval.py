@@ -1,5 +1,5 @@
-from app.vectorstore import VectorStore
 from app.hybrid_retriever import HybridRetriever
+from app.vectorstore import VectorStore
 
 query = "How do I use the DevDocs API to get a list of all available documentation sets?"
 

@@ -1,8 +1,12 @@
-import json, os, time
+import json
+import os
+import time
+
 from anthropic import Anthropic, AsyncAnthropic
-from app.retriever_instance import get_retriever
-from app.models import RAGResponse
 from dotenv import load_dotenv
+
+from app.models import RAGResponse
+from app.retriever_instance import get_retriever
 
 load_dotenv()
 
@@ -15,14 +19,18 @@ if _tracing_enabled:
     try:
         from langsmith import traceable
     except ImportError:
+
         def traceable(*args, **kwargs):
             def decorator(fn):
                 return fn
+
             return decorator if not args or not callable(args[0]) else args[0]
 else:
+
     def traceable(*args, **kwargs):
         def decorator(fn):
             return fn
+
         return decorator if not args or not callable(args[0]) else args[0]
 
 
@@ -39,9 +47,9 @@ def get_llm_stats() -> dict:
     return {
         "llm_calls": _llm_stats["calls"],
         "llm_errors": _llm_stats["errors"],
-        "llm_avg_ms": round(
-            _llm_stats["total_ms"] / _llm_stats["calls"], 1
-        ) if _llm_stats["calls"] > 0 else 0,
+        "llm_avg_ms": round(_llm_stats["total_ms"] / _llm_stats["calls"], 1)
+        if _llm_stats["calls"] > 0
+        else 0,
     }
 
 
@@ -74,7 +82,9 @@ def ask(question: str, k: int = 5) -> RAGResponse:
     if not chunks:
         return RAGResponse(
             answer="No documents have been ingested yet. Run scripts/ingest.py first.",
-            sources=[], confidence=0.0, has_answer=False
+            sources=[],
+            confidence=0.0,
+            has_answer=False,
         )
 
     # Step 2: Build context block
@@ -86,9 +96,7 @@ def ask(question: str, k: int = 5) -> RAGResponse:
     for i, chunk in enumerate(chunks):
         fp = chunk["metadata"].get("file_path", "unknown")
         score = chunk["rerank_score"]
-        context_parts.append(
-            f"[Chunk {i+1} | {fp} | relevance: {score:.2f}]\n{chunk['content']}"
-        )
+        context_parts.append(f"[Chunk {i+1} | {fp} | relevance: {score:.2f}]\n{chunk['content']}")
     context = "\n\n---\n\n".join(context_parts)
 
     # Step 3: Call LLM
@@ -99,12 +107,9 @@ def ask(question: str, k: int = 5) -> RAGResponse:
             model=os.getenv("MODEL", "claude-sonnet-4-6"),
             max_tokens=1024,
             system=SYSTEM,
-            messages=[{
-                "role": "user",
-                "content": f"Context:\n{context}\n\nQuestion: {question}"
-            }]
+            messages=[{"role": "user", "content": f"Context:\n{context}\n\nQuestion: {question}"}],
         )
-    except Exception as e:
+    except Exception:
         _llm_stats["errors"] += 1
         raise
     finally:
@@ -122,10 +127,12 @@ def ask(question: str, k: int = 5) -> RAGResponse:
         retry = client.messages.create(
             model=os.getenv("MODEL", "claude-sonnet-4-6"),
             max_tokens=512,
-            messages=[{
-                "role": "user",
-                "content": f"Your previous JSON output had an error: {e}\nOriginal output: {raw}\nReturn ONLY valid JSON matching the schema."
-            }]
+            messages=[
+                {
+                    "role": "user",
+                    "content": f"Your previous JSON output had an error: {e}\nOriginal output: {raw}\nReturn ONLY valid JSON matching the schema.",
+                }
+            ],
         )
         return RAGResponse(**json.loads(retry.content[0].text.strip()))
 
@@ -162,10 +169,7 @@ async def ask_stream(question: str, k: int = 5):
             model=os.getenv("MODEL", "claude-sonnet-4-6"),
             max_tokens=1024,
             system=SYSTEM,
-            messages=[{
-                "role": "user",
-                "content": f"Context:\n{context}\n\nQuestion: {question}"
-            }]
+            messages=[{"role": "user", "content": f"Context:\n{context}\n\nQuestion: {question}"}],
         ) as stream:
             async for text in stream.text_stream:
                 yield text
