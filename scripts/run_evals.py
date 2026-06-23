@@ -7,7 +7,6 @@ from dotenv import load_dotenv
 from ragas import EvaluationDataset, SingleTurnSample, evaluate
 from ragas.metrics import AnswerRelevancy, ContextPrecision, Faithfulness
 
-import scripts._compat  # noqa: F401  — shim must run before ragas import
 from app.chain import ask
 from app.hybrid_retriever import HybridRetriever
 
