@@ -1,0 +1,62 @@
+[
+  {
+    "question": "How do I create a POST endpoint in FastAPI?",
+    "ground_truth": "Use the @app.post() decorator with a route path and a Pydantic model as the request body"
+  },
+  {
+    "question": "How do I add middleware to a FastAPI app?",
+    "ground_truth": "Use app.add_middleware() with the middleware class and its parameters"
+  },
+  {
+    "question": "What is dependency injection in FastAPI?",
+    "ground_truth": "Use Depends() to declare dependencies resolved automatically per request"
+  },
+  {
+    "question": "How do I define path parameters in FastAPI?",
+    "ground_truth": "Declare variables in the route path and function parameters"
+  },
+  {
+    "question": "How do I define query parameters in FastAPI?",
+    "ground_truth": "Add function parameters that are not part of the path"
+  },
+  {
+    "question": "How do I validate request data in FastAPI?",
+    "ground_truth": "Use Pydantic models for automatic validation and parsing"
+  },
+  {
+    "question": "What is the difference between path parameters and query parameters?",
+    "ground_truth": "Path parameters identify resources while query parameters modify requests"
+  },
+  {
+    "question": "How do I return a custom HTTP status code?",
+    "ground_truth": "Use the status_code argument in route decorators or Response objects"
+  },
+  {
+    "question": "How do I raise an HTTP exception in FastAPI?",
+    "ground_truth": "Use HTTPException with a status code and detail message"
+  },
+  {
+    "question": "How do I enable CORS in FastAPI?",
+    "ground_truth": "Add CORSMiddleware using app.add_middleware()"
+  },
+  {
+    "question": "How do I upload files in FastAPI?",
+    "ground_truth": "Use UploadFile and File dependencies"
+  },
+  {
+    "question": "How do I create asynchronous endpoints?",
+    "ground_truth": "Define route handlers using async def"
+  },
+  {
+    "question": "How do I include routers in FastAPI?",
+    "ground_truth": "Create an APIRouter and register it with app.include_router()"
+  },
+  {
+    "question": "How do I access request headers in FastAPI?",
+    "ground_truth": "Use Header dependencies or the Request object"
+  },
+  {
+    "question": "How do I generate OpenAPI documentation in FastAPI?",
+    "ground_truth": "FastAPI automatically generates OpenAPI docs at /docs and /openapi.json"
+  }
+]
