@@ -1,0 +1,42 @@
+# Version control
+.git/
+.gitignore
+
+# Python
+venv/
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Testing & coverage
+.coverage
+.pytest_cache/
+htmlcov/
+tests/
+
+# Persistent data (mounted as volume at runtime)
+chroma_db/
+
+# Environment & secrets
+.env
+.env.*
+
+# Documentation & metadata
+docs/
+*.md
+LICENSE
+
+# CI/CD
+.github/
+
+# IDE
+.vscode/
+.idea/
+
+# Docker (prevent recursive copy)
+Dockerfile
+docker-compose.yml
+.dockerignore
