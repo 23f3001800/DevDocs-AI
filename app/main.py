@@ -1,30 +1,37 @@
 import os, time, uuid
-from collections import defaultdict
+from collections import defaultdict, deque
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Depends, Request
 from fastapi.responses import StreamingResponse
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from slowapi import Limiter
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
-from app.chain import ask_stream
-from app.vectorstore import VectorStore
+from app.chain import ask_stream, get_llm_stats
+from app.vectorstore import VectorStore, get_cache_stats
+from app.auth import (
+    RegisterRequest, LoginRequest, AuthResponse,
+    register_user, login_user,
+    require_role, get_current_user,
+)
 from scripts.ingest import ingest as run_ingest
 from dotenv import load_dotenv
 load_dotenv()
 
+# ── Metrics (bounded deque prevents memory leak) ─────────────
 _metrics = defaultdict(int)
-_latencies: list[float] = []
+_latencies: deque[float] = deque(maxlen=1000)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    """Startup: pre-warm retriever for zero cold-start latency."""
     print("[startup] Loading retrieval models...")
-    from app.hybrid_retriever import HybridRetriever
-    app.state.retriever = HybridRetriever()  # loads CrossEncoder + BM25
-    print("[startup] Ready.")
+    from app.retriever_instance import warm
+    warm()  # forces model load + dummy query
+    print("[startup] Ready — all models pre-warmed.")
     yield
     print("[shutdown] Cleaning up.")
 
@@ -33,15 +40,9 @@ app = FastAPI(title="DevDocs AI", version="1.0.0", lifespan=lifespan)
 app.state.limiter = limiter
 app.add_middleware(CORSMiddleware, allow_origins=["*"],
                    allow_methods=["*"], allow_headers=["*"])
-security = HTTPBearer()
-
-def verify_key(creds: HTTPAuthorizationCredentials = Depends(security)):
-    if creds.credentials != os.getenv("API_KEY", "dev-key"):
-        raise HTTPException(401, "Invalid API key")
-    return creds.credentials
 
 
-# ── Request logging middleware ───────────────────────────
+# ── Request logging middleware ───────────────────────────────
 @app.middleware("http")
 async def log_and_track(request: Request, call_next):
     rid = str(uuid.uuid4())[:8]
@@ -56,7 +57,7 @@ async def log_and_track(request: Request, call_next):
     return response
 
 
-# ── Models ───────────────────────────────────────────────
+# ── Request models ───────────────────────────────────────────
 class AskRequest(BaseModel):
     question: str = Field(..., min_length=3, max_length=2000)
     k: int        = Field(5, ge=1, le=10)
@@ -65,12 +66,31 @@ class IngestRequest(BaseModel):
     source: str = Field(..., description="GitHub URL, web URL, or local PDF path")
 
 
+# ── Auth routes (public) ────────────────────────────────────
+@app.post("/auth/register", tags=["auth"], response_model=AuthResponse,
+          summary="Register a new user account")
+async def register(body: RegisterRequest):
+    return register_user(body)
 
-# ── Routes ───────────────────────────────────────────────
+
+@app.post("/auth/login", tags=["auth"], response_model=AuthResponse,
+          summary="Login and receive a JWT token")
+async def login(body: LoginRequest):
+    return login_user(body)
+
+
+@app.get("/auth/me", tags=["auth"],
+         summary="Get current user info")
+async def me(user: dict = Depends(get_current_user)):
+    return {"username": user["username"], "role": user["role"]}
+
+
+# ── Query routes (user + admin) ──────────────────────────────
 @app.post("/ask", tags=["query"],
          summary="Ask a question — streams answer tokens")
 @limiter.limit("30/minute")
-async def ask(request: Request, body: AskRequest, _=Depends(verify_key)):
+async def ask(request: Request, body: AskRequest,
+              user: dict = Depends(require_role("user"))):
     _metrics["ask_requests"] += 1
     async def generate():
         try:
@@ -82,11 +102,12 @@ async def ask(request: Request, body: AskRequest, _=Depends(verify_key)):
     return StreamingResponse(generate(), media_type="text/plain")
 
 
+# ── Admin routes ─────────────────────────────────────────────
 @app.post("/ingest", tags=["admin"],
-          summary="Ingest a GitHub repo, URL, or PDF")
+          summary="Ingest a GitHub repo, URL, or PDF (admin only)")
 @limiter.limit("5/minute")
 async def ingest_endpoint(request: Request, body: IngestRequest,
-                          _=Depends(verify_key)):
+                          user: dict = Depends(require_role("admin"))):
     try:
         # WHY run_ingest in a thread executor?
         # run_ingest does file I/O + embedding computation — both
@@ -100,13 +121,39 @@ async def ingest_endpoint(request: Request, body: IngestRequest,
                 "source": body.source}
     except Exception as e:
         raise HTTPException(500, f"Ingest failed: {e}")
-    
-@app.get("/metrics", tags=["ops"])
-def metrics():
-    p95 = sorted(_latencies)[int(len(_latencies)*0.95)] if _latencies else 0
-    return {**dict(_metrics),
-            "p95_latency_ms": round(p95, 1),
-            "avg_latency_ms": round(sum(_latencies)/len(_latencies),1) if _latencies else 0}
 
+
+@app.get("/metrics", tags=["admin"],
+         summary="Operational metrics (admin only)")
+async def metrics(user: dict = Depends(require_role("admin"))):
+    lats = list(_latencies)
+    p95 = sorted(lats)[int(len(lats)*0.95)] if lats else 0
+    return {
+        **dict(_metrics),
+        "p95_latency_ms": round(p95, 1),
+        "avg_latency_ms": round(sum(lats)/len(lats), 1) if lats else 0,
+        **get_cache_stats(),
+        **get_llm_stats(),
+    }
+
+
+@app.get("/admin/users", tags=["admin"],
+         summary="List all registered users (admin only)")
+async def list_all_users(user: dict = Depends(require_role("admin"))):
+    from app.database import list_users
+    return {"users": list_users()}
+
+
+# ── Public ops routes ────────────────────────────────────────
 @app.get("/health", tags=["ops"])
-def health(): return {"status": "ok", "chunks_in_db": VectorStore().count()}
+def health():
+    return {"status": "ok", "chunks_in_db": VectorStore().count()}
+
+
+# ── Serve frontend static files ──────────────────────────────
+# IMPORTANT: This must be the LAST route — it catches all unmatched paths.
+# Mount at "/" so index.html is served at the root URL.
+import pathlib
+_frontend_dir = pathlib.Path(__file__).parent.parent / "frontend"
+if _frontend_dir.exists():
+    app.mount("/", StaticFiles(directory=str(_frontend_dir), html=True), name="frontend")
