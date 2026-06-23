@@ -9,3 +9,19 @@ chroma_db/
 
 # Vector DB
 chroma_db/chroma_db/
+
+# Data
+data/
+
+# Coverage
+.coverage
+htmlcov/
+.pytest_cache/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
