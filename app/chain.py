@@ -124,17 +124,27 @@ def ask(question: str, k: int = 5) -> RAGResponse:
     try:
         return RAGResponse(**json.loads(raw))
     except Exception as e:
-        retry = client.messages.create(
-            model=os.getenv("MODEL", "claude-sonnet-4-6"),
-            max_tokens=512,
-            messages=[
-                {
-                    "role": "user",
-                    "content": f"Your previous JSON output had an error: {e}\nOriginal output: {raw}\nReturn ONLY valid JSON matching the schema.",
-                }
-            ],
-        )
-        return RAGResponse(**json.loads(retry.content[0].text.strip()))
+        # Retry once: ask Claude to fix its own malformed JSON
+        try:
+            retry = client.messages.create(
+                model=os.getenv("MODEL", "claude-sonnet-4-6"),
+                max_tokens=512,
+                messages=[
+                    {
+                        "role": "user",
+                        "content": f"Your previous JSON output had an error: {e}\nOriginal output: {raw}\nReturn ONLY valid JSON matching the schema.",
+                    }
+                ],
+            )
+            return RAGResponse(**json.loads(retry.content[0].text.strip()))
+        except Exception:
+            # Both attempts failed — return the raw text as a best-effort answer
+            return RAGResponse(
+                answer=raw or "Unable to generate answer.",
+                sources=[c["metadata"].get("file_path", "") for c in chunks[:3]],
+                confidence=0.1,
+                has_answer=bool(raw),
+            )
 
 
 @traceable(name="ask_stream", run_type="chain")
