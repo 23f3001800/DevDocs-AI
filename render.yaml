@@ -1,0 +1,25 @@
+# Render Blueprint — Infrastructure as Code
+# https://render.com/docs/blueprint-spec
+services:
+  - type: web
+    name: devdocs-ai
+    runtime: docker
+    repo: https://github.com/23f3001800/DevDocs-AI
+    branch: main
+    plan: free
+    healthCheckPath: /health
+    envVars:
+      - key: ANTHROPIC_API_KEY
+        sync: false  # set manually in Render dashboard
+      - key: GOOGLE_API_KEY
+        sync: false
+      - key: JWT_SECRET
+        generateValue: true  # Render auto-generates a secure random value
+      - key: ADMIN_PASSWORD
+        sync: false
+      - key: LANGSMITH_API_KEY
+        sync: false
+      - key: LANGSMITH_TRACING
+        value: "true"
+      - key: PYTHONUNBUFFERED
+        value: "1"
