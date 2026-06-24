@@ -129,21 +129,22 @@ jobs:
           cache-to: type=gha,mode=max
 
   # ──────────────────────────────────────────────
-  # 5. Deploy — push to Railway (main branch only)
+  # 5. Deploy — trigger Render deploy (main only)
   # ──────────────────────────────────────────────
   deploy:
     needs: [eval, docker]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     environment: production
-    env:
-      RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Install Railway CLI
-        run: npm i -g @railway/cli
-
-      - name: Deploy to Railway
-        run: railway up --service devdocs-ai
+      - name: Trigger Render deploy
+        run: |
+          if [ -z "${{ secrets.RENDER_DEPLOY_HOOK }}" ]; then
+            echo "⚠️  RENDER_DEPLOY_HOOK not set — skipping deploy."
+            echo "   Create a Deploy Hook in Render dashboard → Settings → Deploy Hook"
+            echo "   Then add it as a GitHub secret named RENDER_DEPLOY_HOOK"
+            exit 0
+          fi
+          curl -sf "${{ secrets.RENDER_DEPLOY_HOOK }}" \
+            && echo "✅ Render deploy triggered" \
+            || echo "⚠️  Deploy hook failed (service may not exist yet)"
