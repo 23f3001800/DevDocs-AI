@@ -159,6 +159,24 @@ class GrokProvider:
                 yield delta.content
 
 
+# ─── Mock Provider (used when no API keys are set — CI / offline testing) ────
+class MockProvider:
+    name = "mock"
+
+    def __init__(self):
+        self.model = "mock-model"
+
+    def generate(self, system: str, user_message: str, max_tokens: int = 1024) -> LLMResponse:
+        return LLMResponse(
+            text="Mock response (testing mode)",
+            provider=self.name,
+            model=self.model,
+        )
+
+    async def stream(self, system: str, user_message: str, max_tokens: int = 1024):
+        yield "Mock response (testing mode)"
+
+
 # ─── Fallback Manager ────────────────────────────────────────
 class LLMManager:
     """Manages multiple LLM providers with automatic fallback.
@@ -238,21 +256,4 @@ class LLMManager:
 
 # ── Singleton ─────────────────────────────────────────────────
 llm_manager = LLMManager()
-
-# Mock provider used when no real API keys are set (useful for CI/tests)
-class MockProvider:
-    name = "mock"
-
-    def __init__(self):
-        self.model = "mock-model"
-
-    def generate(self, system: str, user_message: str, max_tokens: int = 1024) -> LLMResponse:
-        return LLMResponse(
-            text="Mock response (testing mode)",
-            provider=self.name,
-            model=self.model,
-        )
-
-    async def stream(self, system: str, user_message: str, max_tokens: int = 1024):
-        yield "Mock response (testing mode)"
 
