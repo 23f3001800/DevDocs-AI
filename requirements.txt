@@ -1,5 +1,7 @@
-# Core LLM + RAG
+# Core LLM + RAG (multi-provider fallback: Anthropic → Gemini → Grok)
 anthropic>=0.40.0
+google-genai>=1.0.0
+openai>=1.40.0
 langchain>=0.3.0
 langchain-anthropic>=0.3.0
 langchain-community>=0.3.0

@@ -2,9 +2,9 @@ import json
 import os
 import time
 
-from anthropic import Anthropic, AsyncAnthropic
 from dotenv import load_dotenv
 
+from app.llm_providers import llm_manager
 from app.models import RAGResponse
 from app.retriever_instance import get_retriever
 
@@ -34,12 +34,8 @@ else:
         return decorator if not args or not callable(args[0]) else args[0]
 
 
-# ── Anthropic clients (singletons) ───────────────────────────
-client = Anthropic()
-async_client = AsyncAnthropic()
-
 # ── Metrics tracking ─────────────────────────────────────────
-_llm_stats = {"calls": 0, "errors": 0, "total_ms": 0}
+_llm_stats = {"calls": 0, "errors": 0, "total_ms": 0, "providers_used": {}}
 
 
 def get_llm_stats() -> dict:
@@ -50,6 +46,8 @@ def get_llm_stats() -> dict:
         "llm_avg_ms": round(_llm_stats["total_ms"] / _llm_stats["calls"], 1)
         if _llm_stats["calls"] > 0
         else 0,
+        "providers_available": llm_manager.provider_names(),
+        "providers_used": dict(_llm_stats["providers_used"]),
     }
 
 
@@ -99,15 +97,16 @@ def ask(question: str, k: int = 5) -> RAGResponse:
         context_parts.append(f"[Chunk {i+1} | {fp} | relevance: {score:.2f}]\n{chunk['content']}")
     context = "\n\n---\n\n".join(context_parts)
 
-    # Step 3: Call LLM
+    user_message = f"Context:\n{context}\n\nQuestion: {question}"
+
+    # Step 3: Call LLM (with automatic provider fallback)
     t0 = time.time()
     _llm_stats["calls"] += 1
     try:
-        resp = client.messages.create(
-            model=os.getenv("MODEL", "claude-sonnet-4-6"),
-            max_tokens=1024,
-            system=SYSTEM,
-            messages=[{"role": "user", "content": f"Context:\n{context}\n\nQuestion: {question}"}],
+        result = llm_manager.generate(SYSTEM, user_message)
+        # Track which provider was used
+        _llm_stats["providers_used"][result.provider] = (
+            _llm_stats["providers_used"].get(result.provider, 0) + 1
         )
     except Exception:
         _llm_stats["errors"] += 1
@@ -115,28 +114,24 @@ def ask(question: str, k: int = 5) -> RAGResponse:
     finally:
         _llm_stats["total_ms"] += (time.time() - t0) * 1000
 
-    raw = resp.content[0].text.strip()
+    raw = result.text
 
     # Step 4: Parse with retry
     # WHY retry? LLMs occasionally produce malformed JSON.
-    # Rather than crashing, we send the error back to Claude
+    # Rather than crashing, we send the error back to the LLM
     # and ask it to fix its own output. Works ~99% of the time.
     try:
         return RAGResponse(**json.loads(raw))
     except Exception as e:
-        # Retry once: ask Claude to fix its own malformed JSON
+        # Retry once: ask the LLM to fix its own malformed JSON
         try:
-            retry = client.messages.create(
-                model=os.getenv("MODEL", "claude-sonnet-4-6"),
-                max_tokens=512,
-                messages=[
-                    {
-                        "role": "user",
-                        "content": f"Your previous JSON output had an error: {e}\nOriginal output: {raw}\nReturn ONLY valid JSON matching the schema.",
-                    }
-                ],
+            retry_msg = (
+                f"Your previous JSON output had an error: {e}\n"
+                f"Original output: {raw}\n"
+                f"Return ONLY valid JSON matching the schema."
             )
-            return RAGResponse(**json.loads(retry.content[0].text.strip()))
+            retry_result = llm_manager.generate(SYSTEM, retry_msg, max_tokens=512)
+            return RAGResponse(**json.loads(retry_result.text))
         except Exception:
             # Both attempts failed — return the raw text as a best-effort answer
             return RAGResponse(
@@ -167,6 +162,8 @@ async def ask_stream(question: str, k: int = 5):
         parts.append(f"[{fp} | score:{chunk['rerank_score']:.2f}]\n{chunk['content']}")
     context = "\n\n---\n\n".join(parts)
 
+    user_message = f"Context:\n{context}\n\nQuestion: {question}"
+
     # WHY stream tokens instead of yielding the full answer?
     # Time-to-first-token (TTFT) is what users perceive as "speed".
     # A 3-second full response feels slow.
@@ -175,14 +172,8 @@ async def ask_stream(question: str, k: int = 5):
     t0 = time.time()
     _llm_stats["calls"] += 1
     try:
-        async with async_client.messages.stream(
-            model=os.getenv("MODEL", "claude-sonnet-4-6"),
-            max_tokens=1024,
-            system=SYSTEM,
-            messages=[{"role": "user", "content": f"Context:\n{context}\n\nQuestion: {question}"}],
-        ) as stream:
-            async for text in stream.text_stream:
-                yield text
+        async for token in llm_manager.stream(SYSTEM, user_message):
+            yield token
     except Exception:
         _llm_stats["errors"] += 1
         raise
