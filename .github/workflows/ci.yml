@@ -129,7 +129,7 @@ jobs:
           cache-to: type=gha,mode=max
 
   # ──────────────────────────────────────────────
-  # 5. Deploy — trigger Render deploy (main only)
+  # 5. Deploy — Azure App Service (main only)
   # ──────────────────────────────────────────────
   deploy:
     needs: [eval, docker]
@@ -137,14 +137,31 @@ jobs:
     runs-on: ubuntu-latest
     environment: production
     steps:
-      - name: Trigger Render deploy
+      - name: Check Azure credentials
+        id: check
         run: |
-          if [ -z "${{ secrets.RENDER_DEPLOY_HOOK }}" ]; then
-            echo "⚠️  RENDER_DEPLOY_HOOK not set — skipping deploy."
-            echo "   Create a Deploy Hook in Render dashboard → Settings → Deploy Hook"
-            echo "   Then add it as a GitHub secret named RENDER_DEPLOY_HOOK"
-            exit 0
+          if [ -z "${{ secrets.AZURE_CREDENTIALS }}" ]; then
+            echo "⚠️  AZURE_CREDENTIALS not set — skipping deploy."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
           fi
-          curl -sf "${{ secrets.RENDER_DEPLOY_HOOK }}" \
-            && echo "✅ Render deploy triggered" \
-            || echo "⚠️  Deploy hook failed (service may not exist yet)"
+
+      - name: Login to Azure
+        if: steps.check.outputs.skip != 'true'
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Lowercase repo name
+        if: steps.check.outputs.skip != 'true'
+        id: repo
+        run: echo "name=$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+
+      - name: Deploy to Azure App Service
+        if: steps.check.outputs.skip != 'true'
+        uses: azure/webapps-deploy@v3
+        with:
+          app-name: devdocs-ai
+          images: ghcr.io/${{ steps.repo.outputs.name }}:sha-${{ github.sha }}
+

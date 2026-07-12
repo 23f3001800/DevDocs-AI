@@ -33,7 +33,10 @@ def _get_admin_headers():
 
 # ── Auth tests ───────────────────────────────────────────────
 def test_register():
-    r = client.post("/auth/register", json={"username": "newuser_test", "password": "pass123456"})
+    import uuid
+
+    unique_user = f"testuser_{uuid.uuid4().hex[:8]}"
+    r = client.post("/auth/register", json={"username": unique_user, "password": "pass123456"})
     assert r.status_code == 200
     data = r.json()
     assert "token" in data
