@@ -20,7 +20,8 @@ RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
 FROM python:3.12-slim AS runtime
 
 ENV PYTHONUNBUFFERED=1 \
-    PYTHONDONTWRITEBYTECODE=1
+    PYTHONDONTWRITEBYTECODE=1 \
+    HF_HOME=/app/data/huggingface
 
 # curl — HEALTHCHECK probe; git — required by gitpython (loaders.py)
 RUN apt-get update && \
@@ -40,7 +41,7 @@ COPY frontend/ ./frontend/
 # Non-root user for runtime security
 RUN groupadd --gid 1000 appuser && \
     useradd --uid 1000 --gid 1000 --no-create-home --shell /bin/false appuser && \
-    mkdir -p /app/chroma_db /app/data && \
+    mkdir -p /app/chroma_db /app/data/huggingface && \
     chown -R appuser:appuser /app
 
 USER appuser
