@@ -22,9 +22,9 @@ FROM python:3.12-slim AS runtime
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1
 
-# curl is required for the container HEALTHCHECK probe
+# curl — HEALTHCHECK probe; git — required by gitpython (loaders.py)
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends curl && \
+    apt-get install -y --no-install-recommends curl git && \
     rm -rf /var/lib/apt/lists/*
 
 # Copy pre-built site-packages from the builder stage
