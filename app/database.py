@@ -12,50 +12,70 @@ from pathlib import Path
 
 DB_PATH = os.getenv("DB_PATH", "./data/devdocs.db")
 
+# WHY a module-level guard? The schema + admin seed only need to run once per
+# process. The previous code ran CREATE TABLE and the admin-seed SELECT on
+# *every* connection — i.e. on every auth check on every request. Doing it once
+# removes that per-request overhead (and the associated write contention).
+_schema_ready = False
 
-def _get_conn() -> sqlite3.Connection:
-    """Get a SQLite connection, creating the DB + tables if needed."""
+
+def _init_schema() -> None:
+    """Create the users table and seed the admin account — once per process."""
+    global _schema_ready
+    if _schema_ready:
+        return
+
     Path(DB_PATH).parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS users (
-            id        INTEGER PRIMARY KEY AUTOINCREMENT,
-            username  TEXT    UNIQUE NOT NULL,
-            password  TEXT    NOT NULL,
-            role      TEXT    NOT NULL DEFAULT 'user',
-            created   TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
-    conn.commit()
-
-    # Seed the admin account on first init.
-    # WHY auto-seed? So the app is usable immediately after deploy — no manual
-    # setup step. In production ADMIN_PASSWORD must be set explicitly; in dev a
-    # convenience default is used. The password value is NEVER logged.
-    row = conn.execute("SELECT id FROM users WHERE username = 'admin'").fetchone()
-    if not row:
-        import bcrypt
-
-        admin_pw = os.getenv("ADMIN_PASSWORD")
-        if not admin_pw:
-            if os.getenv("APP_ENV", "development").lower() == "production":
-                raise RuntimeError(
-                    "ADMIN_PASSWORD must be set in production to seed the admin "
-                    "account. Refusing to create an admin with a known default."
-                )
-            admin_pw = "admin123"  # dev convenience only — documented in .env.example
-        hashed = bcrypt.hashpw(admin_pw.encode(), bcrypt.gensalt()).decode()
-        conn.execute(
-            "INSERT INTO users (username, password, role) VALUES (?, ?, ?)",
-            ("admin", hashed, "admin"),
-        )
+    try:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                id        INTEGER PRIMARY KEY AUTOINCREMENT,
+                username  TEXT    UNIQUE NOT NULL,
+                password  TEXT    NOT NULL,
+                role      TEXT    NOT NULL DEFAULT 'user',
+                created   TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
         conn.commit()
-        print(
-            "[db] Admin account created (username: admin). "
-            "Set the ADMIN_PASSWORD env var to control the password."
-        )
 
+        # Seed the admin account on first init.
+        # WHY auto-seed? So the app is usable immediately after deploy — no
+        # manual setup step. In production ADMIN_PASSWORD must be set
+        # explicitly; in dev a convenience default is used. Never logged.
+        row = conn.execute("SELECT id FROM users WHERE username = 'admin'").fetchone()
+        if not row:
+            import bcrypt
+
+            admin_pw = os.getenv("ADMIN_PASSWORD")
+            if not admin_pw:
+                if os.getenv("APP_ENV", "development").lower() == "production":
+                    raise RuntimeError(
+                        "ADMIN_PASSWORD must be set in production to seed the admin "
+                        "account. Refusing to create an admin with a known default."
+                    )
+                admin_pw = "admin123"  # dev convenience only — see .env.example
+            hashed = bcrypt.hashpw(admin_pw.encode(), bcrypt.gensalt()).decode()
+            conn.execute(
+                "INSERT INTO users (username, password, role) VALUES (?, ?, ?)",
+                ("admin", hashed, "admin"),
+            )
+            conn.commit()
+            print(
+                "[db] Admin account created (username: admin). "
+                "Set the ADMIN_PASSWORD env var to control the password."
+            )
+    finally:
+        conn.close()
+
+    _schema_ready = True
+
+
+def _get_conn() -> sqlite3.Connection:
+    """Get a SQLite connection, initialising the schema once if needed."""
+    _init_schema()
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
     return conn
 
 
