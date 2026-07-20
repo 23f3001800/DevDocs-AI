@@ -69,6 +69,22 @@ Respond ONLY with valid JSON matching this exact schema — no preamble, no mark
 }"""
 
 
+# WHY a separate prompt for streaming?
+# The streaming endpoint sends tokens straight to the user's chat window,
+# so the model must produce human-readable prose — NOT the JSON envelope
+# above (which would render as a raw {"answer": ...} blob). Sources are
+# appended out-of-band via the ||SOURCES|| marker, so the model doesn't
+# need to emit them here.
+STREAM_SYSTEM = """You are DevDocs AI — a technical assistant that answers questions
+about codebases and documentation.
+
+Rules:
+1. Answer ONLY from the provided context. Never invent information.
+2. If the context does not contain the answer, say so plainly.
+3. Write a clear, well-formatted Markdown answer. Do NOT wrap it in JSON.
+4. Reference relevant file paths inline when they help the reader."""
+
+
 @traceable(name="ask_sync", run_type="chain")
 def ask(question: str, k: int = 5) -> RAGResponse:
     """Synchronous RAG query — returns structured RAGResponse."""
@@ -172,7 +188,7 @@ async def ask_stream(question: str, k: int = 5):
     t0 = time.time()
     _llm_stats["calls"] += 1
     try:
-        async for token in llm_manager.stream(SYSTEM, user_message):
+        async for token in llm_manager.stream(STREAM_SYSTEM, user_message):
             yield token
     except Exception:
         _llm_stats["errors"] += 1
