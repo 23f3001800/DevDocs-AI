@@ -1,4 +1,5 @@
 from fastapi.testclient import TestClient
+from slowapi.errors import RateLimitExceeded
 
 from app.main import app
 
@@ -68,6 +69,12 @@ def test_me_endpoint():
     assert r.status_code == 200
     assert r.json()["username"] == "meuser"
     assert r.json()["role"] == "user"
+
+
+# ── Rate limiting ────────────────────────────────────────────
+def test_rate_limit_handler_is_registered():
+    # Without this handler, hitting a limit 500s instead of returning 429.
+    assert RateLimitExceeded in app.exception_handlers
 
 
 # ── Health (public) ──────────────────────────────────────────
