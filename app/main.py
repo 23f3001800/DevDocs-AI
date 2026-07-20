@@ -1,8 +1,11 @@
+import ipaddress
 import pathlib
+import socket
 import time
 import uuid
 from collections import defaultdict, deque
 from contextlib import asynccontextmanager
+from urllib.parse import urlparse
 
 from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, HTTPException, Request
@@ -76,6 +79,41 @@ class IngestRequest(BaseModel):
     source: str = Field(..., description="GitHub URL, web URL, or local PDF path")
 
 
+# ── SSRF guard for ingest sources ────────────────────────────
+def validate_ingest_source(source: str) -> None:
+    """Reject URLs that resolve to private / internal addresses.
+
+    WHY? /ingest makes the server fetch (URL) or clone (git) a remote
+    target. Without this check an operator could point it at cloud
+    metadata (169.254.169.254), loopback, or internal services — a
+    classic SSRF. We only validate http(s) sources; local PDF paths are
+    admin-gated. DNS is resolved here so a hostname pointing at a private
+    IP is caught before any request is made.
+    """
+    if "://" not in source:
+        return  # local path (e.g. /data/manual.pdf) — admin-only, skip URL checks
+
+    parsed = urlparse(source)
+    if parsed.scheme not in ("http", "https"):
+        # Reject file://, ftp://, gopher://, etc. — only http(s) may be fetched.
+        raise HTTPException(400, "Only http(s) URL sources are allowed")
+    host = parsed.hostname
+    if not host:
+        raise HTTPException(400, "Invalid URL — missing host")
+
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except socket.gaierror:
+        raise HTTPException(400, f"Cannot resolve host: {host}")
+
+    for info in infos:
+        ip = ipaddress.ip_address(info[4][0])
+        if not ip.is_global:
+            raise HTTPException(
+                400, f"Refusing to fetch private/internal address ({ip}) for host '{host}'"
+            )
+
+
 # ── Auth routes (public) ────────────────────────────────────
 @app.post(
     "/auth/register",
@@ -119,12 +157,14 @@ async def ask(request: Request, body: AskRequest, user: dict = Depends(require_r
     return StreamingResponse(generate(), media_type="text/plain")
 
 
-# ── Ingest route (user + admin) ──────────────────────────────
+# ── Ingest route (admin only) ────────────────────────────────
 @app.post("/ingest", tags=["ingest"], summary="Ingest a GitHub repo, URL, or PDF")
 @limiter.limit("5/minute")
 async def ingest_endpoint(
-    request: Request, body: IngestRequest, user: dict = Depends(require_role("user"))
+    request: Request, body: IngestRequest, user: dict = Depends(require_role("admin"))
 ):
+    # Reject SSRF targets before touching the network (raises HTTP 400).
+    validate_ingest_source(body.source)
     try:
         # WHY run_ingest in a thread executor?
         # run_ingest does file I/O + embedding computation — both

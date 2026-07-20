@@ -2,9 +2,9 @@
 Fast, offline unit tests for DevDocs AI.
 
 These cover the pure logic — auth/RBAC, JWT, BM25, chunking, response schema,
-provider fallback, and the embedding-cache stats — WITHOUT downloading models
-or calling any paid LLM API. They run in seconds and need no secrets, so they
-make a good CI floor.
+provider fallback, the SSRF guard, and the embedding-cache stats — WITHOUT
+downloading models or calling any paid LLM API. They run in seconds and need no
+secrets, so they make a good CI floor.
 
 Run just these:   pytest tests/test_units.py -v
 """
@@ -17,12 +17,18 @@ from fastapi import HTTPException
 from langchain_core.documents import Document
 from pydantic import ValidationError
 
+from app import auth
+from app.bm25_retriever import BM25Retriever
+from app.chunker import chunk_documents
+from app.llm_providers import LLMManager, LLMResponse, MockProvider
+from app.main import validate_ingest_source
+from app.models import RAGResponse
+from app.vectorstore import get_cache_stats
+
+
 # ─────────────────────────────────────────────────────────────
 # auth.py — password hashing
 # ─────────────────────────────────────────────────────────────
-from app import auth
-
-
 def test_password_hash_roundtrip():
     hashed = auth.hash_password("s3cret-pw")
     assert hashed != "s3cret-pw"  # never store plaintext
@@ -97,8 +103,6 @@ def test_require_role_unknown_role_is_denied():
 # ─────────────────────────────────────────────────────────────
 # bm25_retriever.py
 # ─────────────────────────────────────────────────────────────
-from app.bm25_retriever import BM25Retriever
-
 DOCS = [
     "FastAPI is a modern web framework for building APIs with Python.",
     "BM25 ranks documents by term frequency and inverse document frequency.",
@@ -138,9 +142,6 @@ def test_bm25_filters_zero_scores():
 # ─────────────────────────────────────────────────────────────
 # chunker.py
 # ─────────────────────────────────────────────────────────────
-from app.chunker import chunk_documents
-
-
 def test_chunker_adds_index_metadata():
     doc = Document(
         page_content="First paragraph.\n\n" + ("word " * 300),
@@ -174,9 +175,6 @@ def test_chunker_handles_code_language():
 # ─────────────────────────────────────────────────────────────
 # models.py — RAGResponse schema validation
 # ─────────────────────────────────────────────────────────────
-from app.models import RAGResponse
-
-
 def test_ragresponse_valid():
     r = RAGResponse(answer="hi", sources=["a.py"], confidence=0.8, has_answer=True)
     assert r.confidence == 0.8
@@ -193,9 +191,6 @@ def test_ragresponse_confidence_bounds_enforced():
 # ─────────────────────────────────────────────────────────────
 # llm_providers.py — MockProvider + fallback logic
 # ─────────────────────────────────────────────────────────────
-from app.llm_providers import LLMManager, LLMResponse, MockProvider
-
-
 def test_mock_provider_generate():
     resp = MockProvider().generate("sys", "user")
     assert isinstance(resp, LLMResponse)
@@ -264,11 +259,33 @@ async def test_mock_provider_stream():
 
 
 # ─────────────────────────────────────────────────────────────
+# main.py — SSRF guard for /ingest sources
+# ─────────────────────────────────────────────────────────────
+@pytest.mark.parametrize(
+    "bad",
+    [
+        "http://169.254.169.254/latest/meta-data/",  # cloud metadata
+        "http://127.0.0.1:8000/admin",  # loopback
+        "http://localhost/internal",  # loopback by name
+        "http://10.0.0.5/",  # private range
+        "ftp://example.com/file",  # disallowed scheme
+        "file:///etc/passwd",  # local file scheme
+    ],
+)
+def test_validate_ingest_source_rejects_internal(bad):
+    with pytest.raises(HTTPException):
+        validate_ingest_source(bad)
+
+
+def test_validate_ingest_source_allows_public_and_local():
+    # Public host and non-URL local paths should pass without raising.
+    validate_ingest_source("https://github.com/tiangolo/fastapi")
+    validate_ingest_source("/data/manual.pdf")
+
+
+# ─────────────────────────────────────────────────────────────
 # vectorstore.py — embedding cache stats (no model needed)
 # ─────────────────────────────────────────────────────────────
-from app.vectorstore import get_cache_stats
-
-
 def test_cache_stats_shape_and_bounds():
     stats = get_cache_stats()
     for key in (

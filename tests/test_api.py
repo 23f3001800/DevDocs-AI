@@ -111,11 +111,22 @@ def test_ingest_requires_auth():
     assert r.status_code in (401, 403)
 
 
-def test_ingest_allowed_for_user_role():
+def test_ingest_forbidden_for_user_role():
+    # /ingest is admin-only — a plain user must be rejected with 403.
     headers = _get_auth_headers("regularuser", "pass123456")
     r = client.post("/ingest", json={"source": "https://example.com"}, headers=headers)
-    # User should be allowed — may fail with 500 if URL unreachable, but NOT 403
-    assert r.status_code != 403
+    assert r.status_code == 403
+
+
+def test_ingest_blocks_ssrf_metadata_endpoint():
+    # Admin is authorized, but the SSRF guard must reject internal targets.
+    headers = _get_admin_headers()
+    r = client.post(
+        "/ingest",
+        json={"source": "http://169.254.169.254/latest/meta-data/"},
+        headers=headers,
+    )
+    assert r.status_code == 400
 
 
 # ── Metrics (requires admin role) ────────────────────────────
