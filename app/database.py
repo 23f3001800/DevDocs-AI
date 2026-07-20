@@ -29,21 +29,32 @@ def _get_conn() -> sqlite3.Connection:
     """)
     conn.commit()
 
-    # Seed default admin on first init
-    # WHY auto-seed? So the app is usable immediately after deploy —
-    # no manual setup step required. Change the password after first login.
+    # Seed the admin account on first init.
+    # WHY auto-seed? So the app is usable immediately after deploy — no manual
+    # setup step. In production ADMIN_PASSWORD must be set explicitly; in dev a
+    # convenience default is used. The password value is NEVER logged.
     row = conn.execute("SELECT id FROM users WHERE username = 'admin'").fetchone()
     if not row:
         import bcrypt
 
-        default_pw = os.getenv("ADMIN_PASSWORD", "admin123")
-        hashed = bcrypt.hashpw(default_pw.encode(), bcrypt.gensalt()).decode()
+        admin_pw = os.getenv("ADMIN_PASSWORD")
+        if not admin_pw:
+            if os.getenv("APP_ENV", "development").lower() == "production":
+                raise RuntimeError(
+                    "ADMIN_PASSWORD must be set in production to seed the admin "
+                    "account. Refusing to create an admin with a known default."
+                )
+            admin_pw = "admin123"  # dev convenience only — documented in .env.example
+        hashed = bcrypt.hashpw(admin_pw.encode(), bcrypt.gensalt()).decode()
         conn.execute(
             "INSERT INTO users (username, password, role) VALUES (?, ?, ?)",
             ("admin", hashed, "admin"),
         )
         conn.commit()
-        print(f"[db] Default admin created (username: admin, password: {default_pw})")
+        print(
+            "[db] Admin account created (username: admin). "
+            "Set the ADMIN_PASSWORD env var to control the password."
+        )
 
     return conn
 

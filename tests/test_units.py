@@ -9,7 +9,11 @@ secrets, so they make a good CI floor.
 Run just these:   pytest tests/test_units.py -v
 """
 
+import os
+import subprocess
+import sys
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import jwt
 import pytest
@@ -24,6 +28,8 @@ from app.llm_providers import LLMManager, LLMResponse, MockProvider
 from app.main import validate_ingest_source
 from app.models import RAGResponse
 from app.vectorstore import get_cache_stats
+
+_REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
 # ─────────────────────────────────────────────────────────────
@@ -98,6 +104,37 @@ def test_require_role_unknown_role_is_denied():
     dep = auth.require_role("user")
     with pytest.raises(HTTPException):
         dep(user={"username": "x", "role": "nonsense"})
+
+
+# ─────────────────────────────────────────────────────────────
+# auth.py — production fail-fast on the insecure JWT default
+# ─────────────────────────────────────────────────────────────
+def _import_auth_with_env(**overrides):
+    """Import app.auth in a clean subprocess with the given env overrides."""
+    env = {k: v for k, v in os.environ.items() if k != "JWT_SECRET"}
+    env.update(overrides)
+    return subprocess.run(
+        [sys.executable, "-c", "import app.auth"],
+        cwd=str(_REPO_ROOT),
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+
+
+def test_auth_refuses_insecure_default_in_production():
+    result = _import_auth_with_env(
+        APP_ENV="production", JWT_SECRET="dev-secret-change-in-prod"
+    )
+    assert result.returncode != 0
+    assert "JWT_SECRET" in result.stderr
+
+
+def test_auth_allows_insecure_default_in_development():
+    result = _import_auth_with_env(
+        APP_ENV="development", JWT_SECRET="dev-secret-change-in-prod"
+    )
+    assert result.returncode == 0
 
 
 # ─────────────────────────────────────────────────────────────
