@@ -29,10 +29,34 @@ def get_cache_stats() -> dict:
     }
 
 
+# ── Shared, lazily-loaded singletons ─────────────────────────
+# WHY? VectorStore() is constructed on every /health probe, every /ingest,
+# and inside HybridRetriever. Building a SentenceTransformer each time
+# re-initialises a ~90 MB torch model — a big, needless cost on a hot path
+# (the Docker HEALTHCHECK alone hits it every 30s). Load the model and the
+# Chroma client once per process and share them across all instances.
+_embedder: SentenceTransformer | None = None
+_client: chromadb.ClientAPI | None = None
+
+
+def _get_embedder() -> SentenceTransformer:
+    global _embedder
+    if _embedder is None:
+        _embedder = SentenceTransformer(os.getenv("EMBEDDING_MODEL", "all-MiniLM-L6-v2"))
+    return _embedder
+
+
+def _get_client() -> chromadb.ClientAPI:
+    global _client
+    if _client is None:
+        _client = chromadb.PersistentClient(path=os.getenv("CHROMA_PATH", "./chroma_db"))
+    return _client
+
+
 class VectorStore:
     def __init__(self, collection_name: str = "devdocs"):
-        self.embedder = SentenceTransformer(os.getenv("EMBEDDING_MODEL", "all-MiniLM-L6-v2"))
-        self.client = chromadb.PersistentClient(path=os.getenv("CHROMA_PATH", "./chroma_db"))
+        self.embedder = _get_embedder()
+        self.client = _get_client()
         self.collection = self.client.get_or_create_collection(
             name=collection_name, metadata={"hnsw:space": "cosine"}
         )
