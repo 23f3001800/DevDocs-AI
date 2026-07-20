@@ -333,3 +333,26 @@ def test_cache_stats_shape_and_bounds():
     ):
         assert key in stats
     assert 0.0 <= stats["embedding_cache_hit_rate"] <= 1.0
+
+
+def test_embedder_is_a_shared_singleton(monkeypatch):
+    # The real model is never loaded here — we swap in a dummy and assert the
+    # loader is invoked at most once, then reused (the perf fix's contract).
+    import app.vectorstore as vs
+
+    load_count = {"n": 0}
+
+    class _DummyModel:
+        pass
+
+    def _fake_ctor(_name):
+        load_count["n"] += 1
+        return _DummyModel()
+
+    monkeypatch.setattr(vs, "SentenceTransformer", _fake_ctor)
+    monkeypatch.setattr(vs, "_embedder", None)  # auto-reverted by monkeypatch
+
+    first = vs._get_embedder()
+    second = vs._get_embedder()
+    assert first is second
+    assert load_count["n"] == 1
