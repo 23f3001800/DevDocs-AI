@@ -1,4 +1,5 @@
 import ipaddress
+import os
 import pathlib
 import socket
 import time
@@ -55,7 +56,15 @@ app.state.limiter = limiter
 # Without this handler, exceeding a @limiter.limit(...) raises an unhandled
 # RateLimitExceeded → HTTP 500 instead of the correct 429 Too Many Requests.
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+# CORS origins are configurable via ALLOWED_ORIGINS (comma-separated).
+# Defaults to "*" for local dev; pin to your frontend origin(s) in production.
+_allowed_origins = [o.strip() for o in os.getenv("ALLOWED_ORIGINS", "*").split(",") if o.strip()]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_allowed_origins,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 # ── Request logging middleware ───────────────────────────────
