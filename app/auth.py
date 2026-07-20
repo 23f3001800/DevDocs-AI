@@ -12,6 +12,7 @@ session store needed. The frontend stores the token in localStorage
 and sends it as Authorization: Bearer <token> on every request.
 """
 
+import logging
 import os
 from datetime import UTC, datetime, timedelta
 
@@ -24,9 +25,27 @@ from pydantic import BaseModel, Field
 from app.database import create_user, get_user
 
 # ── Config ───────────────────────────────────────────────────
-JWT_SECRET = os.getenv("JWT_SECRET", "dev-secret-change-in-prod")
+_INSECURE_JWT_DEFAULT = "dev-secret-change-in-prod"
+JWT_SECRET = os.getenv("JWT_SECRET", _INSECURE_JWT_DEFAULT)
 JWT_ALGORITHM = "HS256"
 JWT_EXPIRY_HOURS = 24
+
+# Fail fast in production if the JWT secret was never set. Signing tokens
+# with a public constant means anyone can forge an admin JWT, so refuse to
+# start rather than run insecurely. Dev/CI (APP_ENV != "production") only
+# get a loud warning so local workflows keep working.
+_APP_ENV = os.getenv("APP_ENV", "development").lower()
+if JWT_SECRET == _INSECURE_JWT_DEFAULT:
+    if _APP_ENV == "production":
+        raise RuntimeError(
+            "JWT_SECRET is unset (using the insecure built-in default) while "
+            "APP_ENV=production. Set JWT_SECRET to a strong random value "
+            "(e.g. `openssl rand -hex 32`) before starting."
+        )
+    logging.getLogger(__name__).warning(
+        "JWT_SECRET is not set — using the insecure development default. "
+        "Do NOT use this in production."
+    )
 
 security = HTTPBearer(auto_error=False)
 
