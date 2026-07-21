@@ -118,6 +118,20 @@ docker compose up --build
 docker build -t devdocs-ai . && docker run -p 8000:8000 --env-file .env devdocs-ai
 ```
 
+### Production configuration
+
+The Docker image sets `APP_ENV=production`, which makes the app **fail-closed** —
+it refuses to start unless these are set explicitly:
+
+| Variable | Why it's required |
+|----------|-------------------|
+| `JWT_SECRET` | Without it, tokens are signed with a public constant and anyone can forge an admin JWT. Generate with `openssl rand -hex 32`. |
+| `ADMIN_PASSWORD` | Seeds the auto-created `admin` account. Refuses to fall back to a known default. |
+| `ALLOWED_ORIGINS` | Comma-separated CORS origins. Defaults to `*` — pin to your frontend origin. |
+
+`docker compose` overrides `APP_ENV` to `development` for local runs, so the
+above are optional when developing.
+
 ---
 
 ## API Reference

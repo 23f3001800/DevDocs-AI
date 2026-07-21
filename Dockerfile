@@ -19,8 +19,13 @@ RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
 # ============================================================================
 FROM python:3.12-slim AS runtime
 
+# APP_ENV=production makes the image fail-closed: app/auth.py refuses to start
+# with the built-in JWT_SECRET default, and database.py refuses to seed the
+# admin account without an explicit ADMIN_PASSWORD. docker-compose overrides
+# this to "development" for local runs.
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
+    APP_ENV=production \
     HF_HOME=/app/data/huggingface
 
 # curl — HEALTHCHECK probe; git — required by gitpython (loaders.py)

@@ -5,6 +5,10 @@ services:
       - "8000:8000"
     env_file:
       - .env
+    environment:
+      # The image defaults to APP_ENV=production (fail-closed). Local compose
+      # runs in development mode unless you explicitly export APP_ENV.
+      APP_ENV: ${APP_ENV:-development}
     volumes:
       - ./chroma_db:/app/chroma_db
       - ./data:/app/data
