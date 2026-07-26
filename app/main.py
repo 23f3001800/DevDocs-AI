@@ -40,12 +40,23 @@ _latencies: deque[float] = deque(maxlen=1000)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Startup: pre-warm retriever for zero cold-start latency."""
-    print("[startup] Loading retrieval models...")
-    from app.retriever_instance import warm
+    """Startup: best-effort pre-warm of the retriever.
 
-    warm()  # forces model load + dummy query
-    print("[startup] Ready — all models pre-warmed.")
+    WHY wrap in try/except? Pre-warming is a latency optimization, NOT a
+    startup requirement. If it fails — constrained memory, a slow/failed model
+    download, etc. — we must still start serving; the models load lazily on
+    first use. Previously an exception here propagated out of the ASGI lifespan
+    and uvicorn exited with code 3, so the whole container crash-looped and the
+    site was unreachable. A warm-up hiccup must never take the service down.
+    """
+    print("[startup] Loading retrieval models...")
+    try:
+        from app.retriever_instance import warm
+
+        warm()  # forces model load + dummy query
+        print("[startup] Ready — all models pre-warmed.")
+    except Exception as e:  # noqa: BLE001 — deliberately broad; startup must not die
+        print(f"[startup] WARNING: pre-warm failed ({e}); models will load on first request.")
     yield
     print("[shutdown] Cleaning up.")
 
