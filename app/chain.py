@@ -1,51 +1,50 @@
 import json
+import logging
 import os
 import time
 
-from dotenv import load_dotenv
-
+from app.config import get_settings
 from app.llm_providers import llm_manager
 from app.models import RAGResponse
 from app.retriever_instance import get_retriever
 
-load_dotenv()
+log = logging.getLogger(__name__)
 
 # ── LangSmith tracing (optional) ─────────────────────────────
-# WHY conditional import? LangSmith is optional — if the user doesn't
-# set LANGCHAIN_API_KEY, everything still works. The @traceable decorator
-# is a no-op wrapper when tracing is disabled.
+# WHY conditional? Tracing is opt-in. When disabled, @traceable is replaced by a
+# no-op so the business logic is annotated identically either way and the
+# feature costs nothing when off.
 _tracing_enabled = os.getenv("LANGCHAIN_TRACING_V2", "").lower() == "true"
+
+
+def _noop_traceable(*args, **kwargs):
+    def decorator(fn):
+        return fn
+
+    # Handles both @traceable and @traceable(name=...) forms.
+    return decorator if not args or not callable(args[0]) else args[0]
+
+
 if _tracing_enabled:
     try:
         from langsmith import traceable
     except ImportError:
-
-        def traceable(*args, **kwargs):
-            def decorator(fn):
-                return fn
-
-            return decorator if not args or not callable(args[0]) else args[0]
+        traceable = _noop_traceable
 else:
-
-    def traceable(*args, **kwargs):
-        def decorator(fn):
-            return fn
-
-        return decorator if not args or not callable(args[0]) else args[0]
+    traceable = _noop_traceable
 
 
 # ── Metrics tracking ─────────────────────────────────────────
-_llm_stats = {"calls": 0, "errors": 0, "total_ms": 0, "providers_used": {}}
+_llm_stats = {"calls": 0, "errors": 0, "total_ms": 0.0, "providers_used": {}}
 
 
 def get_llm_stats() -> dict:
     """Return LLM call stats for /metrics."""
+    calls = _llm_stats["calls"]
     return {
-        "llm_calls": _llm_stats["calls"],
+        "llm_calls": calls,
         "llm_errors": _llm_stats["errors"],
-        "llm_avg_ms": round(_llm_stats["total_ms"] / _llm_stats["calls"], 1)
-        if _llm_stats["calls"] > 0
-        else 0,
+        "llm_avg_ms": round(_llm_stats["total_ms"] / calls, 1) if calls else 0,
         "providers_available": llm_manager.provider_names(),
         "providers_used": dict(_llm_stats["providers_used"]),
     }
@@ -70,11 +69,10 @@ Respond ONLY with valid JSON matching this exact schema — no preamble, no mark
 
 
 # WHY a separate prompt for streaming?
-# The streaming endpoint sends tokens straight to the user's chat window,
-# so the model must produce human-readable prose — NOT the JSON envelope
-# above (which would render as a raw {"answer": ...} blob). Sources are
-# appended out-of-band via the ||SOURCES|| marker, so the model doesn't
-# need to emit them here.
+# You cannot stream structured JSON to a chat window — partial JSON is
+# unrenderable, and the user would watch {"answer": "The auth flow us appear
+# character by character. The streaming path emits prose instead, and sources
+# travel out-of-band as a separate SSE event.
 STREAM_SYSTEM = """You are DevDocs AI — a technical assistant that answers questions
 about codebases and documentation.
 
@@ -85,13 +83,27 @@ Rules:
 4. Reference relevant file paths inline when they help the reader."""
 
 
+def _build_context(chunks: list[dict]) -> tuple[str, list[str]]:
+    """Format retrieved chunks into a context block, and collect sources.
+
+    file_path is included in-band because the model can only cite what it can
+    see; rerank_score is included so it can calibrate `confidence` — if every
+    chunk scored low, retrieval was weak and the answer should be hedged.
+    """
+    parts, sources = [], []
+    for i, chunk in enumerate(chunks):
+        fp = chunk["metadata"].get("file_path", "unknown")
+        sources.append(fp)
+        parts.append(
+            f"[Chunk {i + 1} | {fp} | relevance: {chunk['rerank_score']:.2f}]\n{chunk['content']}"
+        )
+    return "\n\n---\n\n".join(parts), sources
+
+
 @traceable(name="ask_sync", run_type="chain")
 def ask(question: str, k: int = 5) -> RAGResponse:
-    """Synchronous RAG query — returns structured RAGResponse."""
-    retriever = get_retriever()
-
-    # Step 1: Retrieve relevant chunks
-    chunks = retriever.retrieve(question, k=k)
+    """Synchronous RAG query — returns a structured RAGResponse."""
+    chunks = get_retriever().retrieve(question, k=k)
 
     if not chunks:
         return RAGResponse(
@@ -101,26 +113,14 @@ def ask(question: str, k: int = 5) -> RAGResponse:
             has_answer=False,
         )
 
-    # Step 2: Build context block
-    # WHY include file_path and rerank_score in context?
-    # Claude uses file_path to populate the sources field accurately.
-    # rerank_score helps Claude calibrate confidence — lower scores
-    # mean the retrieved chunks are less relevant to this question.
-    context_parts = []
-    for i, chunk in enumerate(chunks):
-        fp = chunk["metadata"].get("file_path", "unknown")
-        score = chunk["rerank_score"]
-        context_parts.append(f"[Chunk {i+1} | {fp} | relevance: {score:.2f}]\n{chunk['content']}")
-    context = "\n\n---\n\n".join(context_parts)
-
+    context, _ = _build_context(chunks)
     user_message = f"Context:\n{context}\n\nQuestion: {question}"
+    max_tokens = get_settings().llm_max_tokens
 
-    # Step 3: Call LLM (with automatic provider fallback)
     t0 = time.time()
     _llm_stats["calls"] += 1
     try:
-        result = llm_manager.generate(SYSTEM, user_message)
-        # Track which provider was used
+        result = llm_manager.generate(SYSTEM, user_message, max_tokens=max_tokens)
         _llm_stats["providers_used"][result.provider] = (
             _llm_stats["providers_used"].get(result.provider, 0) + 1
         )
@@ -132,14 +132,13 @@ def ask(question: str, k: int = 5) -> RAGResponse:
 
     raw = result.text
 
-    # Step 4: Parse with retry
-    # WHY retry? LLMs occasionally produce malformed JSON.
-    # Rather than crashing, we send the error back to the LLM
-    # and ask it to fix its own output. Works ~99% of the time.
+    # Parse with self-repair. LLM output is probabilistic — it will occasionally
+    # emit a trailing comma or a markdown fence. Feeding the parse error back to
+    # the model fixes it most of the time; the final fallback guarantees the
+    # endpoint never 500s on a formatting hiccup.
     try:
         return RAGResponse(**json.loads(raw))
     except Exception as e:
-        # Retry once: ask the LLM to fix its own malformed JSON
         try:
             retry_msg = (
                 f"Your previous JSON output had an error: {e}\n"
@@ -149,7 +148,7 @@ def ask(question: str, k: int = 5) -> RAGResponse:
             retry_result = llm_manager.generate(SYSTEM, retry_msg, max_tokens=512)
             return RAGResponse(**json.loads(retry_result.text))
         except Exception:
-            # Both attempts failed — return the raw text as a best-effort answer
+            log.warning("JSON self-repair failed; returning raw text at low confidence")
             return RAGResponse(
                 answer=raw or "Unable to generate answer.",
                 sources=[c["metadata"].get("file_path", "") for c in chunks[:3]],
@@ -160,43 +159,42 @@ def ask(question: str, k: int = 5) -> RAGResponse:
 
 @traceable(name="ask_stream", run_type="chain")
 async def ask_stream(question: str, k: int = 5):
-    """Async streaming version — yields tokens for FastAPI StreamingResponse."""
-    retriever = get_retriever()
+    """Async streaming RAG query.
 
-    # Retrieval is CPU-bound (embedding + cosine), safe to call sync here
-    chunks = retriever.retrieve(question, k=k)
+    Yields ("token", text) tuples followed by exactly one ("sources", [paths]).
+    The transport (SSE framing) is the API layer's concern, not this function's.
+    """
+    # Retrieval is CPU-bound (embedding + cross-encoder). It blocks the event
+    # loop for ~200-400ms; acceptable at low concurrency, and the first thing to
+    # move to a thread pool if p95 under load becomes a problem.
+    chunks = get_retriever().retrieve(question, k=k)
 
     if not chunks:
-        yield "⚠️ No documents ingested yet. Run: python scripts/ingest.py --source <url>"
+        yield "token", "⚠️ No documents ingested yet. Run: python scripts/ingest.py --source <url>"
+        yield "sources", []
         return
 
-    # Build context block with source attribution
-    parts, sources = [], []
-    for chunk in chunks:
-        fp = chunk["metadata"].get("file_path", "unknown")
-        sources.append(fp)
-        parts.append(f"[{fp} | score:{chunk['rerank_score']:.2f}]\n{chunk['content']}")
-    context = "\n\n---\n\n".join(parts)
-
+    context, sources = _build_context(chunks)
     user_message = f"Context:\n{context}\n\nQuestion: {question}"
 
-    # WHY stream tokens instead of yielding the full answer?
-    # Time-to-first-token (TTFT) is what users perceive as "speed".
-    # A 3-second full response feels slow.
-    # The same response streamed feels instant because the user
-    # sees the first word in ~300ms. TTFT is the key UX metric.
+    # WHY stream? Time-to-first-token is what users perceive as speed. A 3s
+    # answer that starts rendering at 300ms feels faster than a 1.5s answer that
+    # appears all at once.
     t0 = time.time()
     _llm_stats["calls"] += 1
     try:
-        async for token in llm_manager.stream(STREAM_SYSTEM, user_message):
-            yield token
+        async for token in llm_manager.stream(
+            STREAM_SYSTEM, user_message, max_tokens=get_settings().llm_max_tokens
+        ):
+            yield "token", token
+        _llm_stats["providers_used"][llm_manager.active_provider] = (
+            _llm_stats["providers_used"].get(llm_manager.active_provider, 0) + 1
+        )
     except Exception:
         _llm_stats["errors"] += 1
         raise
     finally:
         _llm_stats["total_ms"] += (time.time() - t0) * 1000
 
-    # Yield sources as a final delimiter after the answer
-    # WHY \n\n||SOURCES||? The client splits on this marker
-    # to separate the answer text from the sources JSON.
-    yield f"\n\n||SOURCES||{json.dumps(list(set(sources)))}"
+    # dict.fromkeys dedupes while preserving retrieval order (set() would not).
+    yield "sources", list(dict.fromkeys(sources))

@@ -87,7 +87,7 @@ function setupEventListeners() {
     });
 
     // Logout
-    $("#logout-btn").addEventListener("click", logout);
+    $("#logout-btn").addEventListener("click", () => logout(true));
 
     // Ingest form
     $("#ingest-form").addEventListener("submit", handleIngest);
@@ -139,7 +139,22 @@ async function fetchCurrentUser() {
     currentUser = await res.json();
 }
 
-function logout() {
+/**
+ * Clear local session state. `revoke` sends the token to /auth/logout so the
+ * server denylists its jti — a stateless JWT is otherwise valid until it
+ * expires, which would make "log out" purely cosmetic.
+ */
+async function logout(revoke = false) {
+    if (revoke && token) {
+        try {
+            await fetch(`${API}/auth/logout`, {
+                method: "POST",
+                headers: { Authorization: `Bearer ${token}` },
+            });
+        } catch {
+            // Network failure must not trap the user in a logged-in UI.
+        }
+    }
     token = null;
     currentUser = null;
     localStorage.removeItem("dd_token");
@@ -211,11 +226,31 @@ async function sendMessage() {
 
     isStreaming = true;
 
+    // Rendering is throttled to one animation frame. Re-parsing the whole
+    // markdown answer and rewriting innerHTML on *every* network chunk is
+    // O(n^2) DOM work that visibly janks on long answers.
+    let fullText = "";
+    let sources = [];
+    let renderQueued = false;
+    let firstToken = true;
+
+    const paint = () => {
+        renderQueued = false;
+        contentEl.innerHTML = renderMarkdown(fullText) + renderSources(sources);
+        scrollToBottom();
+    };
+    const schedulePaint = () => {
+        if (renderQueued) return;
+        renderQueued = true;
+        requestAnimationFrame(paint);
+    };
+
     try {
         const res = await fetch(`${API}/ask`, {
             method: "POST",
             headers: {
                 "Content-Type": "application/json",
+                Accept: "text/event-stream",
                 Authorization: `Bearer ${token}`,
             },
             body: JSON.stringify({ question, k: 5 }),
@@ -231,42 +266,54 @@ async function sendMessage() {
             throw new Error(err.detail || `Error ${res.status}`);
         }
 
-        // Stream the response
+        // ── Server-Sent Events ──────────────────────────────
+        // Replaces the old "\n\n||SOURCES||" sentinel, which was ambiguous (an
+        // LLM emitting that literal string corrupted the split) and untyped.
         const reader = res.body.getReader();
         const decoder = new TextDecoder();
-        let fullText = "";
-        contentEl.innerHTML = "";
+        let buffer = "";
+        let streamError = null;
 
         while (true) {
             const { done, value } = await reader.read();
             if (done) break;
 
-            const chunk = decoder.decode(value, { stream: true });
-            fullText += chunk;
+            // { stream: true } holds an incomplete multi-byte UTF-8 character
+            // (an emoji, an accent) split across two network chunks until the
+            // next read — without it you get intermittent replacement chars.
+            buffer += decoder.decode(value, { stream: true });
 
-            // Check for sources delimiter
-            const sourceSplit = fullText.split("\n\n||SOURCES||");
-            const answerText = sourceSplit[0];
+            // Events are separated by a blank line; the trailing partial event
+            // stays in the buffer for the next iteration.
+            const frames = buffer.split("\n\n");
+            buffer = frames.pop() ?? "";
 
-            contentEl.innerHTML = renderMarkdown(answerText);
-            scrollToBottom();
+            for (const frame of frames) {
+                const evt = parseSSE(frame);
+                if (!evt) continue;
+
+                if (evt.event === "token") {
+                    if (firstToken) {
+                        contentEl.innerHTML = "";
+                        firstToken = false;
+                    }
+                    fullText += evt.data.text ?? "";
+                    schedulePaint();
+                } else if (evt.event === "sources") {
+                    sources = evt.data.sources ?? [];
+                    schedulePaint();
+                } else if (evt.event === "error") {
+                    streamError = evt.data.message || "Stream failed";
+                }
+            }
         }
 
-        // Parse sources if present
-        const sourceSplit = fullText.split("\n\n||SOURCES||");
-        if (sourceSplit.length > 1) {
-            try {
-                const sources = JSON.parse(sourceSplit[1]);
-                if (sources.length > 0) {
-                    const sourcesHtml = `<div class="sources-panel">
-                        <div class="sources-label">📄 Sources</div>
-                        ${sources.map((s) => `<div class="source-item">${escapeHtml(s)}</div>`).join("")}
-                    </div>`;
-                    contentEl.innerHTML = renderMarkdown(sourceSplit[0]) + sourcesHtml;
-                }
-            } catch {
-                // Ignore JSON parse errors for sources
-            }
+        paint(); // final synchronous render — never leave a queued frame unpainted
+
+        if (streamError) {
+            contentEl.innerHTML +=
+                `<div class="status-message error">⚠️ ${escapeHtml(streamError)}</div>`;
+            scrollToBottom();
         }
     } catch (err) {
         contentEl.innerHTML = `<span style="color: var(--error)">⚠️ ${escapeHtml(err.message)}</span>`;
@@ -275,6 +322,33 @@ async function sendMessage() {
         sendBtn.disabled = !questionInput.value.trim();
         scrollToBottom();
     }
+}
+
+/**
+ * Parse one SSE frame into { event, data }. Returns null for frames we can't
+ * use (comments, malformed JSON) rather than throwing mid-stream.
+ */
+function parseSSE(frame) {
+    let event = "message";
+    const dataLines = [];
+    for (const line of frame.split("\n")) {
+        if (line.startsWith("event:")) event = line.slice(6).trim();
+        else if (line.startsWith("data:")) dataLines.push(line.slice(5).trim());
+    }
+    if (!dataLines.length) return null;
+    try {
+        return { event, data: JSON.parse(dataLines.join("\n")) };
+    } catch {
+        return null;
+    }
+}
+
+function renderSources(sources) {
+    if (!sources || !sources.length) return "";
+    return `<div class="sources-panel">
+        <div class="sources-label">📄 Sources</div>
+        ${sources.map((s) => `<div class="source-item">${escapeHtml(s)}</div>`).join("")}
+    </div>`;
 }
 
 function appendMessage(role, content, sender) {
@@ -303,6 +377,9 @@ function scrollToBottom() {
 }
 
 // ── Admin: Ingest ───────────────────────────────────────────
+// /ingest now returns 202 + a job_id immediately, because cloning + chunking +
+// embedding a real repository takes minutes and load balancers cut idle
+// connections long before that. We poll for the outcome instead.
 async function handleIngest(e) {
     e.preventDefault();
     const source = $("#ingest-source").value.trim();
@@ -311,6 +388,12 @@ async function handleIngest(e) {
 
     setLoading(btn, true);
     statusEl.classList.add("hidden");
+
+    const show = (text, kind) => {
+        statusEl.textContent = text;
+        statusEl.className = `status-message ${kind}`;
+        statusEl.classList.remove("hidden");
+    };
 
     try {
         const res = await fetch(`${API}/ingest`, {
@@ -327,18 +410,46 @@ async function handleIngest(e) {
             throw new Error(err.detail || "Ingestion failed");
         }
 
-        const data = await res.json();
-        statusEl.textContent = `✅ Ingested successfully — ${data.total_chunks} total chunks in DB`;
-        statusEl.className = "status-message success";
-        statusEl.classList.remove("hidden");
+        const { job_id } = await res.json();
+        show("⏳ Queued — cloning and embedding. This can take a few minutes...", "info");
         $("#ingest-source").value = "";
+
+        const job = await pollIngestJob(job_id, (state) =>
+            show(`⏳ ${state}... (job ${job_id})`, "info")
+        );
+
+        if (job.status === "succeeded") {
+            show(
+                `✅ Ingested ${job.chunks_added} chunks — ${job.total_chunks} total in DB`,
+                "success"
+            );
+        } else {
+            show(`❌ Ingest failed: ${job.error || "unknown error"}`, "error");
+        }
     } catch (err) {
-        statusEl.textContent = `❌ ${err.message}`;
-        statusEl.className = "status-message error";
-        statusEl.classList.remove("hidden");
+        show(`❌ ${err.message}`, "error");
     } finally {
         setLoading(btn, false);
     }
+}
+
+async function pollIngestJob(jobId, onProgress, { intervalMs = 2000, timeoutMs = 900000 } = {}) {
+    const deadline = Date.now() + timeoutMs;
+    let last = "";
+    while (Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, intervalMs));
+        const res = await fetch(`${API}/ingest/${jobId}`, {
+            headers: { Authorization: `Bearer ${token}` },
+        });
+        if (!res.ok) throw new Error("Lost track of the ingest job");
+        const job = await res.json();
+        if (job.status === "succeeded" || job.status === "failed") return job;
+        if (job.status !== last) {
+            last = job.status;
+            onProgress?.(job.status);
+        }
+    }
+    throw new Error("Timed out waiting for the ingest job");
 }
 
 // ── Admin: Metrics ──────────────────────────────────────────
@@ -426,13 +537,23 @@ function escapeHtml(str) {
 }
 
 /**
- * Simple markdown → HTML renderer
- * Handles: code blocks, inline code, bold, italic, lists, headings, paragraphs
+ * Simple markdown → HTML renderer.
+ * Handles: code blocks, inline code, bold, italic, lists, headings, paragraphs.
+ *
+ * ⚠️ SECURITY — THE ORDERING BELOW IS LOAD-BEARING. escapeHtml() MUST run
+ * first, before any regex reintroduces tags. Because the input is escaped up
+ * front, a <script> in LLM output is already &lt;script&gt; by the time the
+ * replacements run, so the only tags in the result are the ones we emit.
+ * Moving escapeHtml() later — or dropping it — turns model output (which is
+ * derived from arbitrary ingested documents) into stored XSS.
+ *
+ * If this grows any further, replace it with marked + DOMPurify rather than
+ * extending the regex chain.
  */
 function renderMarkdown(text) {
     if (!text) return "";
 
-    let html = escapeHtml(text);
+    let html = escapeHtml(text); // ← must stay first; see note above
 
     // Code blocks (```...```)
     html = html.replace(/```(\w*)\n([\s\S]*?)```/g, (_, lang, code) => {

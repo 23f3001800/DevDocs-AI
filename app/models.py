@@ -3,7 +3,7 @@ from pydantic import BaseModel, Field
 
 class RAGResponse(BaseModel):
     # WHY structured output instead of raw string?
-    # Pydantic validates types at parse time — if Claude returns
+    # Pydantic validates types at parse time — if the model returns
     # confidence="high" instead of 0.85, we catch it immediately.
     answer: str = Field(description="Grounded answer from context")
     sources: list[str] = Field(description="List of file paths that support the answer")

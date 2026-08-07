@@ -1,75 +1,129 @@
-# WHY Reciprocal Rank Fusion (RRF)?
-#   - Concat and dedup: doesn't consider rank quality
-#   - Average scores: scores are on different scales (cosine vs BM25)
-#   - RRF: rank-based, scale-invariant, proven on TREC benchmarks
+"""Three-stage retrieval funnel: recall → fusion → precision.
 
+    ~N chunks
+        │
+   ┌────┴────┐        Stage 1 RECALL    (cheap, wide)  → top-`initial_k` each
+   ▼         ▼
+ Dense     BM25
+   └────┬────┘        Stage 2 FUSION    (free)         → RRF merge
+        ▼
+  CrossEncoder        Stage 3 PRECISION (expensive)    → top-k
+        ▼
+      top-k → LLM
+
+The principle: cheap-and-wide first, expensive-and-narrow last. Running the
+cross-encoder over the whole corpus would take minutes; over ~20 candidates it
+takes ~200ms.
+"""
+
+import logging
+import threading
 import time
 
 from sentence_transformers import CrossEncoder
 
 from app.bm25_retriever import BM25Retriever
+from app.config import get_settings
 from app.vectorstore import VectorStore
+
+log = logging.getLogger(__name__)
 
 
 class HybridRetriever:
-    def __init__(self, k_rrf: int = 60):
+    def __init__(self, k_rrf: int | None = None):
+        settings = get_settings()
+        # WHY Reciprocal Rank Fusion? Dense returns cosine scores in [0,1];
+        # BM25 returns unbounded scores. You cannot average or add them — the
+        # scales differ and shift per query. RRF discards scores and uses only
+        # rank, making it scale-invariant and tuning-free.
+        self.k_rrf = settings.rrf_k if k_rrf is None else k_rrf
+        self.default_initial_k = settings.retrieval_initial_k
         self.vs = VectorStore()
         self.bm25 = BM25Retriever()
-        self.k_rrf = k_rrf
-        self._build_bm25_from_chroma()
-        self.reranker = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
+        # Guards rebuilds triggered by /ingest while queries are in flight.
+        self._bm25_lock = threading.Lock()
+        self.rebuild_bm25()
+        self.reranker = CrossEncoder(settings.reranker_model)
 
-    def _build_bm25_from_chroma(self):
-        """Build BM25 index from Chroma's documents."""
-        result = self.vs.collection.get(include=["documents", "metadatas"])
-        if result["documents"]:
-            self.bm25.build_index(result["documents"], result["metadatas"])
-            print(f"BM25 index built: {len(result['documents'])} docs")
+    def rebuild_bm25(self) -> int:
+        """(Re)build the BM25 index from Chroma. Returns the document count.
 
-    def retrieve(self, query: str, k: int = 5, initial_k: int = 20) -> list[dict]:
-        """3-stage pipeline:
-        1. Dense + BM25 → top-20 candidates (fast, coarse)
-        2. RRF merge → unified ranking
-        3. CrossEncoder → top-5 final results (slow, precise)
+        WHY this is public and called after ingest: the index is in-memory and
+        was previously built exactly once, in __init__. Because the retriever is
+        a process-wide singleton, every chunk added by /ingest afterwards was
+        visible to dense search (which queries Chroma live) but invisible to
+        sparse search until the process restarted — so newly ingested exact
+        identifiers, the very thing BM25 exists for, could not be found.
         """
+        result = self.vs.all_documents()
+        documents = result.get("documents") or []
+        with self._bm25_lock:
+            self.bm25.build_index(
+                documents,
+                result.get("metadatas") or [],
+                result.get("ids") or None,
+            )
+        log.info("BM25 index built: %d docs", len(documents))
+        return len(documents)
+
+    def retrieve(self, query: str, k: int = 5, initial_k: int | None = None) -> list[dict]:
+        """Dense + BM25 → RRF merge → cross-encoder rerank → top-k."""
         t0 = time.time()
+        initial_k = initial_k or self.default_initial_k
+
         dense = self.vs.query(query, k=initial_k)
-        sparse = self.bm25.search(query, k=initial_k)
+        with self._bm25_lock:
+            sparse = self.bm25.search(query, k=initial_k)
 
-        # Stage 1: RRF merge (same as before)
+        # ── Stage 2: RRF merge ───────────────────────────────
+        # Keyed on chunk ID, not document text: hashing full documents is
+        # wasteful, and two chunks with identical content (shared boilerplate,
+        # duplicated licence headers) would collapse into one entry carrying
+        # whichever metadata arrived first — so a citation could name the wrong
+        # file.
         rrf_scores: dict[str, float] = {}
-        meta_map: dict[str, dict] = {}
+        by_id: dict[str, dict] = {}
+        for hits in (dense, sparse):
+            for rank, item in enumerate(hits):
+                doc_id = item["id"]
+                rrf_scores[doc_id] = rrf_scores.get(doc_id, 0.0) + 1.0 / (self.k_rrf + rank + 1)
+                by_id.setdefault(doc_id, item)
 
-        for rank, item in enumerate(dense):
-            c = item["content"]
-            rrf_scores[c] = rrf_scores.get(c, 0) + 1 / (60 + rank + 1)
-            meta_map[c] = item["metadata"]
-        for rank, (doc, meta, _) in enumerate(sparse):
-            rrf_scores[doc] = rrf_scores.get(doc, 0) + 1 / (60 + rank + 1)
-            if doc not in meta_map:
-                meta_map[doc] = meta
+        if not rrf_scores:
+            return []
 
-        candidates = sorted(rrf_scores, key=rrf_scores.get, reverse=True)[:initial_k]
-        print(f"RRF merged candidates: {len(candidates)} unique docs from dense+BM25")
+        candidate_ids = sorted(rrf_scores, key=rrf_scores.get, reverse=True)[:initial_k]
 
-        # Stage 2: CrossEncoder reranking
-        # WHY pairs = [[query, doc], [query, doc], ...]?
-        # CrossEncoder expects query-document pairs because it processes
-        # them together with full attention.
-        # predict() returns a relevance score for each pair.
-        # Higher score = more relevant to this specific query.
-        pairs = [[query, doc] for doc in candidates]
+        # ── Stage 3: cross-encoder rerank ────────────────────
+        # A bi-encoder must compress a document into a vector without knowing
+        # the question. A cross-encoder sees [query, doc] together with full
+        # cross-attention, so it is markedly more accurate — and cannot be
+        # precomputed, which is why it only runs on the shortlist.
+        pairs = [[query, by_id[doc_id]["content"]] for doc_id in candidate_ids]
         scores = self.reranker.predict(pairs)
+        reranked = sorted(zip(candidate_ids, scores), key=lambda x: x[1], reverse=True)[:k]
 
-        reranked = sorted(zip(candidates, scores), key=lambda x: x[1], reverse=True)[:k]
-
-        t1 = time.time()
-        print(f"Hybrid+rerank: {len(candidates)} candidates → {k} results in {(t1-t0)*1000:.0f}ms")
-        print("Top candidates after RRF (before reranking):")
-        for doc, score in sorted(rrf_scores.items(), key=lambda x: x[1], reverse=True)[:5]:
-            print(f"  RRF score={score:.4f} doc='{doc[:50]}...'")
+        log.info(
+            "Hybrid retrieve: dense=%d sparse=%d → %d candidates → %d results in %.0fms",
+            len(dense),
+            len(sparse),
+            len(candidate_ids),
+            len(reranked),
+            (time.time() - t0) * 1000,
+        )
+        # Document *content* is deliberately not logged: ingested material would
+        # otherwise flow into the log aggregator on every single query.
+        log.debug(
+            "Top RRF candidates: %s",
+            [(doc_id, round(rrf_scores[doc_id], 4)) for doc_id in candidate_ids[:5]],
+        )
 
         return [
-            {"content": doc, "metadata": meta_map.get(doc, {}), "rerank_score": float(score)}
-            for doc, score in reranked
+            {
+                "id": doc_id,
+                "content": by_id[doc_id]["content"],
+                "metadata": by_id[doc_id].get("metadata", {}),
+                "rerank_score": float(score),
+            }
+            for doc_id, score in reranked
         ]

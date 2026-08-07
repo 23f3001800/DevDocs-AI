@@ -825,6 +825,13 @@ html, body {
     border: 1px solid rgba(248, 113, 113, 0.2);
 }
 
+/* In-progress state for the polled ingest job (queued / running). */
+.status-message.info {
+    background: rgba(148, 163, 184, 0.1);
+    color: var(--text-secondary);
+    border: 1px solid rgba(148, 163, 184, 0.2);
+}
+
 /* ── Metrics Grid ────────────────────────────────────────── */
 .metrics-grid {
     display: grid;

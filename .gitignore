@@ -26,5 +26,6 @@ htmlcov/
 .DS_Store
 Thumbs.db
 
-# Local working guide — never commit
+# Local working notes — never commit
 GUIDE.md
+LEARNING.md

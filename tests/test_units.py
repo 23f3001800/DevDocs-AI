@@ -123,17 +123,13 @@ def _import_auth_with_env(**overrides):
 
 
 def test_auth_refuses_insecure_default_in_production():
-    result = _import_auth_with_env(
-        APP_ENV="production", JWT_SECRET="dev-secret-change-in-prod"
-    )
+    result = _import_auth_with_env(APP_ENV="production", JWT_SECRET="dev-secret-change-in-prod")
     assert result.returncode != 0
     assert "JWT_SECRET" in result.stderr
 
 
 def test_auth_allows_insecure_default_in_development():
-    result = _import_auth_with_env(
-        APP_ENV="development", JWT_SECRET="dev-secret-change-in-prod"
-    )
+    result = _import_auth_with_env(APP_ENV="development", JWT_SECRET="dev-secret-change-in-prod")
     assert result.returncode == 0
 
 
@@ -146,6 +142,14 @@ DOCS = [
     "ChromaDB stores vector embeddings for semantic search.",
 ]
 METAS = [{"file_path": f"doc{i}.md"} for i in range(len(DOCS))]
+IDS = [f"id{i}" for i in range(len(DOCS))]
+
+
+def test_bm25_defaults_ids_when_omitted():
+    r = BM25Retriever()
+    r.build_index(DOCS, METAS)
+    hits = r.search("BM25 term frequency", k=1)
+    assert hits and hits[0]["id"] == "1"
 
 
 def test_bm25_empty_index_returns_empty():
@@ -154,24 +158,25 @@ def test_bm25_empty_index_returns_empty():
 
 def test_bm25_finds_relevant_doc_first():
     r = BM25Retriever()
-    r.build_index(DOCS, METAS)
+    r.build_index(DOCS, METAS, IDS)
     results = r.search("BM25 term frequency", k=3)
     assert results, "expected at least one hit"
-    top_doc, top_meta, top_score = results[0]
-    assert "BM25" in top_doc
-    assert top_meta["file_path"] == "doc1.md"
-    assert top_score > 0
+    top = results[0]
+    assert "BM25" in top["content"]
+    assert top["metadata"]["file_path"] == "doc1.md"
+    assert top["id"] == "id1"
+    assert top["score"] > 0
 
 
 def test_bm25_respects_k_limit():
     r = BM25Retriever()
-    r.build_index(DOCS, METAS)
+    r.build_index(DOCS, METAS, IDS)
     assert len(r.search("python api framework", k=1)) <= 1
 
 
 def test_bm25_filters_zero_scores():
     r = BM25Retriever()
-    r.build_index(DOCS, METAS)
+    r.build_index(DOCS, METAS, IDS)
     # A query with no overlapping terms should return nothing (scores are 0)
     assert r.search("zzzz qqqq xxxx", k=3) == []
 

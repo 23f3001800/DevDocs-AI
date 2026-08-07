@@ -103,6 +103,7 @@ def test_ask_returns_streaming_response():
     headers = _get_auth_headers("askuser", "pass123456")
     r = client.post("/ask", json={"question": "What is this project about?"}, headers=headers)
     assert r.status_code == 200
+    assert r.headers["content-type"].startswith("text/event-stream")
     assert len(r.text) > 0
 
 
@@ -126,7 +127,8 @@ def test_ingest_forbidden_for_user_role():
 
 
 def test_ingest_blocks_ssrf_metadata_endpoint():
-    # Admin is authorized, but the SSRF guard must reject internal targets.
+    # Admin is authorized, but the SSRF guard must reject internal targets
+    # BEFORE the job is queued.
     headers = _get_admin_headers()
     r = client.post(
         "/ingest",
@@ -134,6 +136,54 @@ def test_ingest_blocks_ssrf_metadata_endpoint():
         headers=headers,
     )
     assert r.status_code == 400
+
+
+def test_ingest_status_requires_admin():
+    headers = _get_auth_headers("jobuser", "pass123456")
+    assert client.get("/ingest/does-not-exist", headers=headers).status_code == 403
+
+
+def test_ingest_status_unknown_job_is_404():
+    headers = _get_admin_headers()
+    assert client.get("/ingest/does-not-exist", headers=headers).status_code == 404
+
+
+# ── Source deletion (admin only) ─────────────────────────────
+def test_delete_source_requires_admin():
+    headers = _get_auth_headers("deluser", "pass123456")
+    r = client.request("DELETE", "/sources", json={"source": "x"}, headers=headers)
+    assert r.status_code == 403
+
+
+def test_delete_source_is_a_noop_for_unknown_source():
+    headers = _get_admin_headers()
+    r = client.request(
+        "DELETE",
+        "/sources",
+        json={"source": "https://nothing.example/never-ingested"},
+        headers=headers,
+    )
+    assert r.status_code == 200
+    assert r.json()["deleted_chunks"] == 0
+
+
+# ── Logout / token revocation ────────────────────────────────
+def test_logout_revokes_the_token():
+    headers = _get_auth_headers("logoutuser", "pass123456")
+    # Token works before logout
+    assert client.get("/auth/me", headers=headers).status_code == 200
+
+    assert client.post("/auth/logout", headers=headers).status_code == 200
+
+    # A stateless JWT is normally valid until it expires; the denylist is what
+    # makes logout real.
+    after = client.get("/auth/me", headers=headers)
+    assert after.status_code == 401
+    assert "revoked" in after.json()["detail"].lower()
+
+
+def test_logout_requires_auth():
+    assert client.post("/auth/logout").status_code in (401, 403)
 
 
 # ── Metrics (requires admin role) ────────────────────────────
