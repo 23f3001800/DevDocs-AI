@@ -7,49 +7,55 @@
 # generate a lock file (`pip freeze > requirements.lock`) and install from it
 # in Docker/CI.
 
-# Core LLM + RAG (multi-provider fallback: Anthropic → Gemini → Grok)
-# NOTE: the umbrella `langchain` and `langchain-anthropic` packages were
-# removed — nothing imports them, and their langchain-core ranges are
-# mutually unsatisfiable (langchain 1.x needs core>=1.4, langchain-anthropic
-# 0.3 needs core<0.4), which made a clean install impossible.
-# langchain-core is declared explicitly because the code imports it directly.
-anthropic==0.40.0
+# ── Core LLM ─────────────────────────────────────────────────
+# Gemini is the only provider. The `anthropic` client was removed along with
+# its provider class — no application code imports it any more.
+#
+# The umbrella `langchain` and `langchain-anthropic` packages were removed
+# earlier for the same reason, plus their langchain-core ranges were mutually
+# unsatisfiable. langchain-core is declared explicitly because we import it.
 google-genai==2.8.0
-openai==2.41.0
 langchain-core==1.4.9
 langchain-community==0.4.2
+
+# ── Retrieval ────────────────────────────────────────────────
 chromadb==0.5.0
 sentence-transformers==3.0.0
 rank-bm25==0.2.2
 numpy==1.26.4
+langchain-text-splitters==1.1.2
 
-# Document loaders
+# ── Document loaders ─────────────────────────────────────────
 pypdf==4.0.0
 gitpython==3.1.40
 requests==2.34.2
 beautifulsoup4==4.12.0
 
-# API
+# ── API ──────────────────────────────────────────────────────
 fastapi==0.115.0
 uvicorn[standard]==0.30.0
-python-dotenv==1.0.0
 pydantic==2.13.4
+pydantic-settings==2.14.1
+python-dotenv==1.0.0
 slowapi==0.1.9
 
-# Auth (JWT + RBAC)
+# ── Auth (JWT + RBAC) ────────────────────────────────────────
 pyjwt==2.13.0
 bcrypt==5.0.0
 
-# Observability
+# ── Observability ────────────────────────────────────────────
 langsmith==0.8.9
 
-# Evaluation
+# ── Evaluation (dev/CI only — not imported by the served app) ─
+# `openai` stays pinned because ragas hard-requires it (ragas → openai,
+# langchain_openai) even though we pass a Gemini evaluator explicitly.
+# It is NOT used by any application code.
 ragas==0.4.3
 datasets==5.0.0
 langchain-google-genai==4.2.7
-langchain-text-splitters==1.1.2
+openai==2.41.0
 
-# Testing + linting
+# ── Testing + linting ────────────────────────────────────────
 pytest==8.4.2
 pytest-asyncio==0.25.3
 httpx==0.28.1

@@ -39,9 +39,10 @@ jobs:
     needs: lint
     runs-on: ubuntu-latest
     env:
-      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-      API_KEY: test-key
-      JWT_SECRET: ci-test-secret
+      # The suite runs fully offline: tests/conftest.py blanks GOOGLE_API_KEY so
+      # LLMManager falls back to MockProvider and no paid call is ever made.
+      APP_ENV: development
+      JWT_SECRET: ci-test-secret-at-least-32-characters-long
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -51,6 +52,12 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
+
+      - name: Cache HuggingFace models
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: hf-${{ runner.os }}-minilm-msmarco-v1
 
       - name: Install dependencies
         run: pip install -r requirements.txt
@@ -66,10 +73,9 @@ jobs:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     env:
-      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
       GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
-      API_KEY: test-key
-      JWT_SECRET: ci-test-secret
+      APP_ENV: development
+      JWT_SECRET: ci-test-secret-at-least-32-characters-long
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -79,6 +85,12 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
+
+      - name: Cache HuggingFace models
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: hf-${{ runner.os }}-minilm-msmarco-v1
 
       - name: Install dependencies
         run: pip install -r requirements.txt

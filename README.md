@@ -15,8 +15,8 @@ Developers waste **hours** searching through docs, README files, and source code
 
 **DevDocs AI** solves this by combining:
 - **Hybrid retrieval** (dense + sparse + reranking) for precision
-- **Claude** for grounded, citation-backed answers
-- **Streaming** for instant time-to-first-token
+- **Gemini** for grounded, citation-backed answers
+- **SSE streaming** for instant time-to-first-token
 - **RAGAS evaluation** to prove it actually works
 
 ---
@@ -27,12 +27,12 @@ Developers waste **hours** searching through docs, README files, and source code
 |---------|---------------|
 | 🔍 **Hybrid Search** | Dense embeddings (MiniLM) + BM25 sparse + RRF fusion |
 | 🎯 **Cross-Encoder Reranking** | ms-marco-MiniLM-L-6-v2 for final precision |
-| ⚡ **Streaming Answers** | Real-time token delivery (~300ms TTFT) |
+| ⚡ **Streaming Answers** | Server-Sent Events, real-time token delivery (~300ms TTFT) |
 | 🔒 **RBAC Auth** | JWT + bcrypt with user/admin roles |
 | 📊 **RAGAS Eval Gate** | Faithfulness, Relevancy, Precision — CI blocks deploys below 0.75 |
-| 🐳 **Production Docker** | Multi-stage, non-root, HEALTHCHECK, <200MB |
+| 🐳 **Production Docker** | Multi-stage, non-root, HEALTHCHECK, CPU-only torch, models baked in |
 | 📈 **Observability** | LangSmith tracing + embedding cache metrics |
-| 🚀 **Zero Cold Start** | Pre-warmed models on startup |
+| 🚀 **Zero Cold Start** | Models baked into the image + pre-warmed on startup |
 
 ---
 
@@ -55,7 +55,7 @@ graph TB
         I --> K[RRF Merge]
         J --> K
         K --> L[CrossEncoder Rerank]
-        L --> M[Claude - Streaming]
+        L --> M[Gemini - Streaming]
         M --> N[Grounded Answer + Sources]
     end
 
@@ -88,8 +88,8 @@ pip install -r requirements.txt
 ```bash
 cp .env.example .env
 # Edit .env with your keys:
-#   ANTHROPIC_API_KEY=sk-ant-...
-#   JWT_SECRET=your-random-secret
+#   GOOGLE_API_KEY=...
+#   JWT_SECRET=your-random-secret  (openssl rand -hex 32)
 ```
 
 ### 3. Ingest Documentation
@@ -127,6 +127,7 @@ it refuses to start unless these are set explicitly:
 |----------|-------------------|
 | `JWT_SECRET` | Without it, tokens are signed with a public constant and anyone can forge an admin JWT. Generate with `openssl rand -hex 32`. |
 | `ADMIN_PASSWORD` | Seeds the auto-created `admin` account. Refuses to fall back to a known default. |
+| `GOOGLE_API_KEY` | Without it the app would silently answer with the mock provider while `/health` stayed green. |
 | `ALLOWED_ORIGINS` | Comma-separated CORS origins. Defaults to `*` — pin to your frontend origin. |
 
 `docker compose` overrides `APP_ENV` to `development` for local runs, so the
@@ -143,6 +144,7 @@ above are optional when developing.
 | `/auth/register` | POST | `{username, password}` | Create account → JWT |
 | `/auth/login` | POST | `{username, password}` | Login → JWT |
 | `/auth/me` | GET | — | Current user info |
+| `/auth/logout` | POST | — | Revoke the presented token (server-side denylist) |
 
 ### Query (requires `user` role)
 
@@ -153,13 +155,23 @@ curl -X POST http://localhost:8000/ask \
   -d '{"question": "How do I create a POST endpoint in FastAPI?", "k": 5}'
 ```
 
+Responses stream as **Server-Sent Events** with three event types:
+`token` (`{"text": "..."}`), `sources` (`{"sources": [...]}`), then `done`.
+A failure mid-stream arrives as an `error` event — once streaming starts the
+HTTP 200 is already committed, so errors can only be delivered in-band.
+
 ### Admin (requires `admin` role)
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/ingest` | POST | Ingest GitHub repo, URL, or PDF |
+| `/ingest` | POST | Queue an ingest → **202** `{job_id}` |
+| `/ingest/{job_id}` | GET | Poll job status (`queued`/`running`/`succeeded`/`failed`) |
+| `/sources` | DELETE | Purge every chunk from a source |
 | `/metrics` | GET | Operational metrics + cache stats |
 | `/admin/users` | GET | List all registered users |
+
+Ingestion is asynchronous because cloning + chunking + embedding a real
+repository takes minutes, and load balancers cut idle connections at ~230s.
 
 ### Ops (public)
 
@@ -191,17 +203,17 @@ python -m scripts.run_evals
 
 | Layer | Technology | Why |
 |-------|-----------|-----|
-| **LLM** | Claude (Anthropic) | Best instruction-following for structured JSON output |
+| **LLM** | Gemini (`gemini-2.5-flash`) | Fast, cheap, long context; single-provider by design |
 | **Embeddings** | all-MiniLM-L6-v2 | Fast, 384-dim, great quality/speed tradeoff |
 | **Vector DB** | ChromaDB | Persistent, embedded, zero-config |
 | **Sparse Search** | BM25 (rank_bm25) | Catches keyword matches that dense embeddings miss |
 | **Reranker** | CrossEncoder ms-marco | Final precision gate — 10x more accurate than bi-encoder |
 | **Framework** | FastAPI | Async, streaming, auto OpenAPI docs |
 | **Auth** | JWT + bcrypt | Stateless, no session store needed |
-| **Eval** | RAGAS + Gemini | Industry-standard RAG evaluation framework |
+| **Eval** | RAGAS + `gemini-2.5-pro` judge | Stronger model judges the answering model |
 | **Tracing** | LangSmith | Full observability for LLM calls |
-| **CI/CD** | GitHub Actions | lint → test → eval gate → Docker → Railway |
-| **Deploy** | Docker + Railway | Multi-stage build, non-root, <200MB |
+| **CI/CD** | GitHub Actions | lint → test → eval gate → Docker → Azure |
+| **Deploy** | Docker + Azure App Service | Multi-stage, non-root, CPU-only torch (~1.5 GB saved) |
 
 ---
 
@@ -211,7 +223,7 @@ python -m scripts.run_evals
 DevDocs-AI/
 ├── app/
 │   ├── main.py              # FastAPI app — routes, RBAC, middleware
-│   ├── chain.py             # RAG chain — retrieval → Claude → response
+│   ├── chain.py             # RAG chain — retrieval → Gemini → response
 │   ├── hybrid_retriever.py  # Dense + BM25 + RRF + CrossEncoder
 │   ├── vectorstore.py       # ChromaDB + embedding cache
 │   ├── bm25_retriever.py    # BM25 sparse search
@@ -219,17 +231,22 @@ DevDocs-AI/
 │   ├── loaders.py           # GitHub, URL, PDF document loaders
 │   ├── models.py            # Pydantic response schemas
 │   ├── auth.py              # JWT auth + RBAC (user/admin)
-│   ├── database.py          # SQLite user store
+│   ├── config.py            # Validated settings + fail-closed prod checks
+│   ├── database.py          # SQLite users + JWT revocation denylist
 │   └── retriever_instance.py # Shared singleton + pre-warm
 ├── frontend/
 │   ├── index.html           # Chat UI
 │   ├── styles.css           # Dark mode + glassmorphism
-│   └── app.js               # Streaming fetch + markdown render
+│   └── app.js               # SSE client + markdown render
 ├── scripts/
 │   ├── ingest.py            # CLI ingestion tool
 │   └── run_evals.py         # RAGAS evaluation harness
 ├── tests/
+│   ├── conftest.py          # Temp DB/Chroma isolation for the whole suite
 │   ├── test_api.py          # API + RBAC integration tests
+│   ├── test_units.py        # Offline unit tests
+│   ├── test_retrieval.py    # RRF fusion + rerank ordering + chunk IDs
+│   ├── test_stream.py       # SSE framing + stream fallback
 │   └── golden_set.json      # 15-question eval dataset
 ├── .github/workflows/ci.yml # CI/CD pipeline
 ├── Dockerfile               # Multi-stage production build
@@ -237,6 +254,36 @@ DevDocs-AI/
 ├── requirements.txt         # Python dependencies
 └── pyproject.toml           # Ruff + pytest config
 ```
+
+---
+
+## Known Limitations
+
+Stated plainly rather than discovered in production:
+
+- **`/metrics` and in-memory rate limiting are per-process.** With more than one
+  uvicorn worker or replica, `/metrics` reports whichever process served the
+  request, and a `30/minute` limit becomes `30 × workers`. Set
+  `RATE_LIMIT_STORAGE_URI=redis://...` to share the limiter; scrape Prometheus
+  if you need cross-replica metrics.
+- **Ingest jobs live in process memory.** A status poll that lands on a
+  different worker returns 404. A shared store or a real task queue is the fix
+  once you scale out.
+- **SQLite is on the container filesystem.** On a PaaS without a mounted volume
+  every redeploy wipes the user table and re-seeds `admin`. Mount persistent
+  storage at `/app/data`, or move to Postgres, before treating accounts as
+  durable.
+- **The JWT lives in `localStorage`.** Any XSS on the page can read it. Logout
+  is real (server-side `jti` denylist), but moving to an `httpOnly` + `SameSite`
+  cookie — with CSRF protection — is the stronger posture.
+- **The SSRF guard has a DNS-rebinding window.** The address is validated, then
+  resolved again by `requests`/`git` when the fetch happens. Redirects are
+  refused for the same reason. `/ingest` is admin-only, so this is
+  defence-in-depth, not the only control.
+- **RAGAS judges Gemini with Gemini.** The judge defaults to a stronger model
+  (`gemini-2.5-pro`) than the one answering (`gemini-2.5-flash`), which reduces
+  self-preference bias but does not eliminate it. Read the scores as a
+  regression signal over time, not an absolute quality measure.
 
 ---
 

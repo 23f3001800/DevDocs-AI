@@ -44,12 +44,25 @@ az webapp config appsettings set \
   --settings \
     WEBSITES_PORT=8000 \
     PYTHONUNBUFFERED=1 \
+    APP_ENV=production \
+    TRUST_PROXY_HEADERS=true \
     LANGSMITH_TRACING=true
+
+# App Service terminates TLS at its front end, so the socket peer is the proxy.
+# TRUST_PROXY_HEADERS makes rate limiting bucket per client rather than per
+# proxy — see _client_key in app/main.py.
+
+echo "🔧 Enabling persistent storage for /app/data..."
+# WITHOUT THIS the container filesystem is ephemeral and every redeploy wipes
+# the SQLite user table (and re-seeds the admin account).
+az webapp config appsettings set \
+  --name "$APP_NAME" \
+  --resource-group "$RESOURCE_GROUP" \
+  --settings WEBSITES_ENABLE_APP_SERVICE_STORAGE=true
 
 echo ""
 echo "⚠️  Set these secrets manually in the Azure portal or CLI:"
 echo "   az webapp config appsettings set --name $APP_NAME --resource-group $RESOURCE_GROUP --settings \\"
-echo '     ANTHROPIC_API_KEY=<your-key> \'
 echo '     GOOGLE_API_KEY=<your-key> \'
 echo '     JWT_SECRET=<random-32-char-string> \'
 echo '     ADMIN_PASSWORD=<your-admin-password>'

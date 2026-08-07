@@ -4,16 +4,25 @@ JWT-based authentication with RBAC (user / admin roles).
 Flow:
   1. POST /auth/register → create user → return JWT
   2. POST /auth/login    → verify password → return JWT
-  3. All protected routes use Depends(require_role("user")) or Depends(require_role("admin"))
-  4. JWT contains: sub (username), role, exp (expiry)
+  3. POST /auth/logout   → revoke the presented token's jti
+  4. Protected routes use Depends(require_role("user")) or require_role("admin")
+  5. JWT carries: sub (username), role, jti (token id), exp, iat
 
-WHY JWT instead of session cookies? Stateless auth — no server-side
-session store needed. The frontend stores the token in localStorage
-and sends it as Authorization: Bearer <token> on every request.
+WHY JWT instead of server-side sessions? Statelessness — any replica can
+validate any token with no shared session store.
+
+⚠️  The trade-off, stated plainly: a stateless JWT cannot be invalidated. This
+module therefore keeps a small `revoked_tokens` denylist (see database.py) so
+logout is real, at the cost of one indexed SELECT per authenticated request.
+
+⚠️  The frontend stores the token in localStorage, which any XSS on the page can
+read. That is the standard SPA trade-off, not a solved problem: keep
+JWT_EXPIRY_HOURS short, and move to an httpOnly+SameSite cookie (plus CSRF
+protection) if you ever handle data worth stealing.
 """
 
 import logging
-import os
+import uuid
 from datetime import UTC, datetime, timedelta
 
 import bcrypt
@@ -22,30 +31,18 @@ from fastapi import Depends, HTTPException
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field
 
-from app.database import create_user, get_user
+from app.config import INSECURE_JWT_DEFAULT, get_settings
+from app.database import create_user, get_user, is_token_revoked, revoke_token
 
-# ── Config ───────────────────────────────────────────────────
-_INSECURE_JWT_DEFAULT = "dev-secret-change-in-prod"
-JWT_SECRET = os.getenv("JWT_SECRET", _INSECURE_JWT_DEFAULT)
-JWT_ALGORITHM = "HS256"
-JWT_EXPIRY_HOURS = 24
+log = logging.getLogger(__name__)
 
-# Fail fast in production if the JWT secret was never set. Signing tokens
-# with a public constant means anyone can forge an admin JWT, so refuse to
-# start rather than run insecurely. Dev/CI (APP_ENV != "production") only
-# get a loud warning so local workflows keep working.
-_APP_ENV = os.getenv("APP_ENV", "development").lower()
-if JWT_SECRET == _INSECURE_JWT_DEFAULT:
-    if _APP_ENV == "production":
-        raise RuntimeError(
-            "JWT_SECRET is unset (using the insecure built-in default) while "
-            "APP_ENV=production. Set JWT_SECRET to a strong random value "
-            "(e.g. `openssl rand -hex 32`) before starting."
-        )
-    logging.getLogger(__name__).warning(
-        "JWT_SECRET is not set — using the insecure development default. "
-        "Do NOT use this in production."
-    )
+_settings = get_settings()
+
+# Re-exported for tests and callers that sign/verify directly.
+JWT_SECRET = _settings.jwt_secret
+JWT_ALGORITHM = _settings.jwt_algorithm
+JWT_EXPIRY_HOURS = _settings.jwt_expiry_hours
+_INSECURE_JWT_DEFAULT = INSECURE_JWT_DEFAULT
 
 security = HTTPBearer(auto_error=False)
 
@@ -69,6 +66,10 @@ class AuthResponse(BaseModel):
 
 # ── Password hashing ────────────────────────────────────────
 def hash_password(password: str) -> str:
+    # bcrypt salts every hash (identical passwords → different hashes, defeating
+    # rainbow tables) and is *deliberately slow*, which caps an offline attacker
+    # at a few guesses/second/core. Never use SHA-256 here — it is fast, which
+    # is exactly wrong for passwords.
     return bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
 
 
@@ -78,16 +79,21 @@ def verify_password(password: str, hashed: str) -> bool:
 
 # ── JWT helpers ──────────────────────────────────────────────
 def create_token(username: str, role: str) -> str:
+    now = datetime.now(UTC)
     payload = {
         "sub": username,
         "role": role,
-        "exp": datetime.now(UTC) + timedelta(hours=JWT_EXPIRY_HOURS),
-        "iat": datetime.now(UTC),
+        # jti is what makes revocation possible — without a per-token id there
+        # is nothing to put on the denylist.
+        "jti": uuid.uuid4().hex,
+        "exp": now + timedelta(hours=JWT_EXPIRY_HOURS),
+        "iat": now,
     }
     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
 
 
 def decode_token(token: str) -> dict:
+    """Verify signature + expiry. NOTE: the payload is signed, not encrypted."""
     try:
         return jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
     except jwt.ExpiredSignatureError:
@@ -104,10 +110,19 @@ def get_current_user(
     if not creds:
         raise HTTPException(401, "Missing authorization header")
     payload = decode_token(creds.credentials)
-    user = get_user(payload["sub"])
+
+    if is_token_revoked(payload.get("jti", "")):
+        raise HTTPException(401, "Token has been revoked")
+
+    username = payload.get("sub")
+    if not username:
+        raise HTTPException(401, "Invalid token — missing subject")
+
+    user = get_user(username)
     if not user:
         raise HTTPException(401, "User not found")
-    return user
+    # Carry the claims through so /auth/logout can revoke this exact token.
+    return {**user, "jti": payload.get("jti", ""), "exp": payload.get("exp")}
 
 
 def require_role(minimum_role: str):
@@ -120,6 +135,7 @@ def require_role(minimum_role: str):
     role_level = {"user": 1, "admin": 2}
 
     def dependency(user: dict = Depends(get_current_user)) -> dict:
+        # .get(role, 0) means an unknown or corrupt role is denied — fail closed.
         user_level = role_level.get(user["role"], 0)
         required_level = role_level.get(minimum_role, 0)
         if user_level < required_level:
@@ -145,6 +161,24 @@ def login_user(req: LoginRequest) -> AuthResponse:
     """Authenticate and return a JWT."""
     user = get_user(req.username)
     if not user or not verify_password(req.password, user["password"]):
+        # One message for both cases — revealing which half was wrong hands an
+        # attacker a username oracle.
         raise HTTPException(401, "Invalid username or password")
     token = create_token(user["username"], user["role"])
     return AuthResponse(token=token, username=user["username"], role=user["role"])
+
+
+def logout_user(user: dict) -> dict:
+    """Revoke the presented token so it cannot be reused before expiry."""
+    jti = user.get("jti")
+    if not jti:
+        raise HTTPException(400, "Token carries no jti and cannot be revoked")
+    exp = user.get("exp")
+    expires_at = (
+        datetime.fromtimestamp(exp, UTC)
+        if isinstance(exp, int | float)
+        else datetime.now(UTC) + timedelta(hours=JWT_EXPIRY_HOURS)
+    )
+    revoke_token(jti, expires_at)
+    log.info("Token revoked for user %s", user.get("username"))
+    return {"status": "logged out"}

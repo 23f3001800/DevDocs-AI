@@ -2,24 +2,31 @@
 Shared singleton for HybridRetriever.
 
 WHY a separate module? Both chain.py and main.py need the same retriever
-instance. If chain.py creates one at import time AND main.py creates another
-in lifespan(), we waste ~400MB RAM (2x CrossEncoder + 2x BM25 index).
-This module provides one instance, initialized once, used everywhere.
+instance. If chain.py created one at import time AND main.py created another in
+lifespan(), we would waste ~400 MB of RAM (2x CrossEncoder + 2x BM25 index).
 """
 
+import logging
 import threading
 import time
+
+log = logging.getLogger(__name__)
 
 _retriever = None
 _lock = threading.Lock()
 
 
 def get_retriever():
-    """Lazy-init the HybridRetriever singleton (thread-safe)."""
+    """Lazy-init the HybridRetriever singleton (thread-safe).
+
+    Double-checked locking: the outer check keeps the hot path lock-free once
+    the instance exists, the inner check (under the lock) stops two racing
+    threads from each building a ~400 MB retriever.
+    """
     global _retriever
     if _retriever is None:
         with _lock:
-            if _retriever is None:  # double-check locking
+            if _retriever is None:
                 from app.hybrid_retriever import HybridRetriever
 
                 _retriever = HybridRetriever()
@@ -27,18 +34,12 @@ def get_retriever():
 
 
 def warm():
-    """Pre-warm all models by running a dummy query.
+    """Pre-warm all models with a dummy query.
 
-    This forces:
-    1. SentenceTransformer model load (if not already loaded)
-    2. First embedding computation (triggers ONNX/torch warmup)
-    3. CrossEncoder warmup (first predict() is always slow)
-
-    After this, the first real user query has zero cold-start latency.
+    Forces the SentenceTransformer load, the first embedding computation, and
+    the first CrossEncoder predict() — each of which is far slower than every
+    subsequent call. After this the first real user query has no cold start.
     """
     t0 = time.time()
-    retriever = get_retriever()
-    # Run a dummy query to warm the embedding model + CrossEncoder
-    _ = retriever.retrieve("warmup query", k=1)
-    ms = (time.time() - t0) * 1000
-    print(f"[startup] Retriever pre-warmed in {ms:.0f}ms")
+    get_retriever().retrieve("warmup query", k=1)
+    log.info("Retriever pre-warmed in %.0fms", (time.time() - t0) * 1000)

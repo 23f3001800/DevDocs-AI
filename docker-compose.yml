@@ -9,7 +9,14 @@ services:
       # The image defaults to APP_ENV=production (fail-closed). Local compose
       # runs in development mode unless you explicitly export APP_ENV.
       APP_ENV: ${APP_ENV:-development}
+      # The embedding + reranking models are baked into the image, so the
+      # container never reaches HuggingFace at boot. If you override
+      # EMBEDDING_MODEL or RERANKER_MODEL to something not baked in, set
+      # HF_HUB_OFFLINE=0 so the new weights can be downloaded.
+      HF_HUB_OFFLINE: ${HF_HUB_OFFLINE:-1}
     volumes:
+      # Containers are ephemeral — anything stateful needs a volume or it is
+      # gone on the next deploy. chroma_db holds the index; data holds users.
       - ./chroma_db:/app/chroma_db
       - ./data:/app/data
     restart: unless-stopped

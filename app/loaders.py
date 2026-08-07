@@ -1,12 +1,18 @@
+import logging
 import os
 import shutil
 import tempfile
 from pathlib import Path
+from urllib.parse import urlparse
 
 import git
 import requests
 from bs4 import BeautifulSoup
 from langchain_core.documents import Document
+
+from app.config import get_settings
+
+log = logging.getLogger(__name__)
 
 # File types we care about in a repo
 CODE_EXTENSIONS = {".py", ".ts", ".tsx", ".js", ".jsx", ".go", ".rs"}
@@ -18,11 +24,12 @@ def load_github_repo(repo_url: str) -> list[Document]:
     """Clone a GitHub repo and load all code + doc files."""
     tmpdir = tempfile.mkdtemp()
     try:
-        print(f"Cloning {repo_url}...")
+        log.info("Cloning %s", repo_url)
         git.Repo.clone_from(repo_url, tmpdir, depth=1)
         docs = []
         for root, dirs, files in os.walk(tmpdir):
-            # Skip unwanted directories in-place
+            # Slice assignment mutates the list os.walk reads, pruning the
+            # traversal. `dirs = [...]` would rebind a local and change nothing.
             dirs[:] = [d for d in dirs if d not in SKIP_DIRS]
             for file in files:
                 ext = Path(file).suffix.lower()
@@ -48,39 +55,82 @@ def load_github_repo(repo_url: str) -> list[Document]:
                     )
                 except Exception:
                     continue
-        print(f"Loaded {len(docs)} files from {repo_url}")
+        log.info("Loaded %d files from %s", len(docs), repo_url)
         return docs
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
 
 
-def load_url(url: str, max_pages: int = 20) -> list[Document]:
-    """Crawl a documentation URL and load text content."""
+def load_url(url: str) -> list[Document]:
+    """Fetch a documentation page and extract its text content.
+
+    WHY allow_redirects=False? The caller validates that `url` resolves to a
+    public address, but a 302 to http://169.254.169.254/ would sail straight
+    past that check — the redirect is followed by requests, after validation
+    has already passed. Refusing to follow redirects closes that hole; the
+    operator can pass the final URL directly.
+    """
+    settings = get_settings()
     try:
-        r = requests.get(url, timeout=10, headers={"User-Agent": "DevDocsAI/1.0"})
+        r = requests.get(
+            url,
+            timeout=settings.ingest_timeout_seconds,
+            headers={"User-Agent": "DevDocsAI/1.0"},
+            allow_redirects=False,
+        )
+        if r.is_redirect or r.is_permanent_redirect:
+            log.warning(
+                "Refusing to follow redirect from %s to %r — pass the final URL directly.",
+                url,
+                r.headers.get("Location"),
+            )
+            return []
         r.raise_for_status()
+
         soup = BeautifulSoup(r.text, "html.parser")
-        # Remove nav, footer, scripts
+        # Strip boilerplate: repeated nav/footer text appears in every chunk and
+        # destroys BM25's IDF signal (a term in every doc carries no information).
         for tag in soup(["nav", "footer", "script", "style"]):
             tag.decompose()
         text = soup.get_text(separator="\n", strip=True)
+        if not text.strip():
+            log.warning("No text extracted from %s", url)
+            return []
+
+        # file_path must be set and unique per source — the vector store derives
+        # chunk IDs from it, and a missing value used to collapse every URL onto
+        # the same "doc_0, doc_1, ..." ID space (silently overwriting each other).
+        parsed = urlparse(url)
+        file_path = f"{parsed.netloc}{parsed.path}" or parsed.netloc
         return [
             Document(
-                page_content=text, metadata={"source": url, "file_type": "html", "is_code": False}
+                page_content=text,
+                metadata={
+                    "source": url,
+                    "file_path": file_path.rstrip("/") or parsed.netloc,
+                    "file_type": "html",
+                    "is_code": False,
+                },
             )
         ]
     except Exception as e:
-        print(f"Failed to load {url}: {e}")
+        log.error("Failed to load %s: %s", url, e)
         return []
 
 
 def load_pdf(path: str) -> list[Document]:
-    """Load a local PDF file."""
+    """Load a local PDF file, one Document per page."""
     from langchain_community.document_loaders import PyPDFLoader
 
     loader = PyPDFLoader(path)
     docs = loader.load()
-    for d in docs:
+    name = Path(path).name
+    for i, d in enumerate(docs):
         d.metadata["is_code"] = False
         d.metadata["file_type"] = "pdf"
+        d.metadata.setdefault("source", path)
+        # PyPDFLoader sets `source` and `page` but never `file_path`; without it
+        # every PDF would share the same generated chunk IDs.
+        d.metadata["file_path"] = f"{name}#page={d.metadata.get('page', i)}"
+    log.info("Loaded %d pages from %s", len(docs), path)
     return docs
