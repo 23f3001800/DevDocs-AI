@@ -8,12 +8,8 @@ hostname at a public IP for the first lookup (passing validation) and rebind
 it to an internal address (169.254.169.254, localhost, ...) before the fetch,
 landing exactly in the gap between check and use.
 
-Both call sites need the identical "resolve every address, reject anything
-non-global" check, so it lives here rather than being duplicated (and
-inevitably drifting) between main.py and loaders.py. Importing this from
-loaders.py would create a cycle if the check lived in app.main (main ->
-scripts.ingest -> loaders -> main), so it lives in its own leaf module
-instead.
+Both call sites need the identical check, so it lives in this leaf module
+rather than being duplicated (and drifting) or creating an import cycle.
 """
 
 import ipaddress

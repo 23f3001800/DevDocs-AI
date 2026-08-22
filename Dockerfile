@@ -42,7 +42,6 @@ CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2')"
 FROM python:3.12-slim AS runtime
 
 # APP_ENV=production makes the image fail-closed: app/config.py refuses to start
-# with the built-in JWT_SECRET default, without an explicit ADMIN_PASSWORD, or
 # without GOOGLE_API_KEY (which would otherwise silently serve mock answers).
 # docker-compose overrides this to "development" for local runs.
 ENV PYTHONUNBUFFERED=1 \

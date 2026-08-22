@@ -5,7 +5,6 @@ This file used to be a manual script that called the live API. It is now real
 pytest coverage that runs offline against the MockProvider and fakes.
 """
 
-import itertools
 import json
 
 import pytest
@@ -13,30 +12,9 @@ from fastapi.testclient import TestClient
 
 from app.llm_providers import LLMManager, LLMResponse
 from app.main import _sse, app
+from tests.conftest import session_headers
 
 client = TestClient(app)
-
-_ip_counter = itertools.count(1)
-
-
-def _fresh_ip_headers() -> dict:
-    """A distinct fake client IP per call — see tests/test_api.py for why:
-    AUTH_RATE_LIMIT is per-IP and tight, and TestClient makes every call look
-    like the same peer without this."""
-    n = next(_ip_counter)
-    return {"X-Forwarded-For": f"10.2.{(n >> 8) % 256}.{n % 256}"}
-
-
-def _auth_headers(username="streamuser", password="pass123456"):
-    ip_headers = _fresh_ip_headers()
-    r = client.post(
-        "/auth/register", json={"username": username, "password": password}, headers=ip_headers
-    )
-    if r.status_code == 409:
-        r = client.post(
-            "/auth/login", json={"username": username, "password": password}, headers=ip_headers
-        )
-    return {"Authorization": f"Bearer {r.json()['token']}"}
 
 
 # ── SSE framing ──────────────────────────────────────────────
@@ -58,7 +36,7 @@ def test_sse_survives_newlines_in_a_token():
 
 def test_ask_streams_sse_events():
     r = client.post(
-        "/ask", json={"question": "What is this project about?"}, headers=_auth_headers()
+        "/ask", json={"question": "What is this project about?"}, headers=session_headers()
     )
     assert r.status_code == 200
     assert r.headers["content-type"].startswith("text/event-stream")
@@ -69,7 +47,7 @@ def test_ask_streams_sse_events():
 
 
 def test_ask_no_longer_uses_the_sources_sentinel():
-    r = client.post("/ask", json={"question": "anything at all here"}, headers=_auth_headers())
+    r = client.post("/ask", json={"question": "anything at all here"}, headers=session_headers())
     assert "||SOURCES||" not in r.text
 
 

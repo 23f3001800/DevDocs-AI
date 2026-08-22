@@ -8,12 +8,8 @@
 # in Docker/CI.
 
 # ── Core LLM ─────────────────────────────────────────────────
-# Gemini is the only provider. The `anthropic` client was removed along with
-# its provider class — no application code imports it any more.
-#
-# The umbrella `langchain` and `langchain-anthropic` packages were removed
-# earlier for the same reason, plus their langchain-core ranges were mutually
-# unsatisfiable. langchain-core is declared explicitly because we import it.
+# Gemini is the only provider — no anthropic/openai client is installed or
+# imported anywhere in app code.
 google-genai==2.8.0
 langchain-core==1.4.9
 langchain-community==0.4.2
@@ -38,22 +34,12 @@ pydantic==2.13.4
 pydantic-settings==2.14.1
 python-dotenv==1.0.0
 slowapi==0.1.9
-
-# ── Auth (JWT + RBAC) ────────────────────────────────────────
-pyjwt==2.13.0
-bcrypt==5.0.0
+# Required by FastAPI/Starlette to parse multipart/form-data — /ingest/upload
+# accepts UploadFile, which needs this even though no app code imports it.
+python-multipart==0.0.20
 
 # ── Observability ────────────────────────────────────────────
 langsmith==0.8.9
-
-# ── Evaluation (dev/CI only — not imported by the served app) ─
-# `openai` stays pinned because ragas hard-requires it (ragas → openai,
-# langchain_openai) even though we pass a Gemini evaluator explicitly.
-# It is NOT used by any application code.
-ragas==0.4.3
-datasets==5.0.0
-langchain-google-genai==4.2.7
-openai==2.41.0
 
 # ── Testing + linting ────────────────────────────────────────
 pytest==8.4.2

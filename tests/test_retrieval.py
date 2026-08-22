@@ -21,10 +21,11 @@ class _FakeVectorStore:
         self.docs = docs
         self.dense_hits = []
 
-    def query(self, text, k=5, file_type=None):
-        return [
-            {"id": i, "content": c, "metadata": m, "score": 1.0} for i, c, m in self.dense_hits[:k]
-        ]
+    def query(self, text, k=5, file_type=None, owner=None):
+        hits = self.dense_hits
+        if owner is not None:
+            hits = [h for h in hits if h[2].get("owner") == owner]
+        return [{"id": i, "content": c, "metadata": m, "score": 1.0} for i, c, m in hits[:k]]
 
     def all_documents(self):
         return {
@@ -195,3 +196,63 @@ def test_chunk_ids_differ_across_repos_sharing_a_filename():
 def test_chunk_ids_differ_per_chunk_index():
     base = {"source": "s", "file_path": "f.md"}
     assert make_chunk_id({**base, "chunk_index": 0}) != make_chunk_id({**base, "chunk_index": 1})
+
+
+def test_chunk_ids_differ_by_owner_for_the_same_source():
+    """Two users independently ingesting the same public URL must not collide
+    on one shared chunk id — each owner's copy needs its own row, or the
+    second ingest would silently overwrite (and reassign) the first user's
+    chunk."""
+    base = {"source": "https://shared.example/docs", "file_path": "index.html", "chunk_index": 0}
+    assert make_chunk_id({**base, "owner": "alice"}) != make_chunk_id({**base, "owner": "bob"})
+    # No owner at all still matches the pre-multi-tenant id exactly.
+    assert make_chunk_id(base) == make_chunk_id({**base, "owner": ""})
+
+
+def test_chunk_ids_differ_by_commit_sha_for_the_same_repo():
+    base = {"source": "https://github.com/x/y", "file_path": "app/main.py", "chunk_index": 0}
+    a = make_chunk_id({**base, "commit_sha": "aaa111"})
+    b = make_chunk_id({**base, "commit_sha": "bbb222"})
+    assert a != b
+    # URL/PDF sources never set commit_sha — behaviour is unchanged for them.
+    assert make_chunk_id(base) == make_chunk_id({**base, "commit_sha": ""})
+
+
+# ── Per-user retrieval isolation ────────────────────────────────
+# Retrieval is per-user PRIVATE: a query scoped to `owner` must only ever see
+# that owner's own ingested chunks. Admin (owner=None) sees across everyone.
+OWNED_DOCS = [
+    (
+        "alice-1",
+        "Alice's private deploy runbook covers the internal staging pipeline.",
+        {"file_path": "alice.md", "owner": "alice"},
+    ),
+    (
+        "bob-1",
+        "Bob's private deploy runbook covers the internal staging pipeline.",
+        {"file_path": "bob.md", "owner": "bob"},
+    ),
+]
+
+
+def test_retrieve_owner_filter_excludes_other_users_chunks():
+    """User A cannot retrieve user B's chunks even when both dense and sparse
+    recall would otherwise surface them."""
+    r = _build(
+        OWNED_DOCS,
+        dense_hits=OWNED_DOCS,
+        rerank_scores={OWNED_DOCS[0][1]: 0.9, OWNED_DOCS[1][1]: 0.9},
+    )
+    results = r.retrieve("private deploy runbook", k=5, owner="alice")
+    assert [x["id"] for x in results] == ["alice-1"]
+    assert all(x["metadata"]["owner"] == "alice" for x in results)
+
+
+def test_retrieve_admin_sees_across_owners():
+    r = _build(
+        OWNED_DOCS,
+        dense_hits=OWNED_DOCS,
+        rerank_scores={OWNED_DOCS[0][1]: 0.9, OWNED_DOCS[1][1]: 0.8},
+    )
+    results = r.retrieve("private deploy runbook", k=5, owner=None)
+    assert {x["id"] for x in results} == {"alice-1", "bob-1"}

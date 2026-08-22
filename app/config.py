@@ -6,7 +6,7 @@ WHY a single Settings object instead of scattered os.getenv() calls?
   - Type coercion + validation with a clear error, instead of a TypeError
     six layers deep when someone sets RETRIEVAL_INITIAL_K=twenty.
   - Production safety checks live in one validator rather than being
-    duplicated across auth.py / database.py / llm_providers.py.
+    duplicated across llm_providers.py and anywhere else that cares.
 
 Precedence (highest first): real environment variables → .env file → defaults.
 """
@@ -16,9 +16,6 @@ from functools import lru_cache
 
 from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
-
-# Sentinel value shipped in .env.example. Production refuses to start with it.
-INSECURE_JWT_DEFAULT = "dev-secret-change-in-prod"
 
 
 class Settings(BaseSettings):
@@ -45,7 +42,7 @@ class Settings(BaseSettings):
     chroma_collection: str = "devdocs"
     embed_cache_max: int = Field(512, ge=0)
 
-    # ── Retrieval knobs (tune these against scripts/run_evals.py) ──
+    # ── Retrieval knobs ──────────────────────────────────────
     retrieval_initial_k: int = Field(20, ge=1, le=200)
     rrf_k: int = Field(60, ge=1)
     chunk_size_code: int = Field(1200, ge=100)
@@ -53,14 +50,15 @@ class Settings(BaseSettings):
     chunk_size_text: int = Field(600, ge=100)
     chunk_overlap_text: int = Field(60, ge=0)
 
-    # ── User database ────────────────────────────────────────
+    # ── Session database ─────────────────────────────────────
     db_path: str = "./data/devdocs.db"
-    admin_password: str = ""
 
-    # ── Auth ─────────────────────────────────────────────────
-    jwt_secret: str = INSECURE_JWT_DEFAULT
-    jwt_algorithm: str = "HS256"
-    jwt_expiry_hours: int = Field(24, ge=1, le=720)
+    # ── Uploads ──────────────────────────────────────────────
+    upload_dir: str = "./data/uploads"
+
+    # Free questions per calendar day (UTC) per X-Session-Id, absent an
+    # X-Api-Key — see the `usage` table.
+    free_daily_limit: int = Field(5, ge=0)
 
     # ── HTTP ─────────────────────────────────────────────────
     allowed_origins: str = "*"
@@ -73,10 +71,6 @@ class Settings(BaseSettings):
     trust_proxy_headers: bool = False
     ask_rate_limit: str = "30/minute"
     ingest_rate_limit: str = "5/minute"
-    # Tighter than ask/ingest on purpose: a legitimate user logs in rarely, an
-    # attacker credential-stuffing /auth/login or spamming /auth/register does
-    # not. Was previously unlimited on both routes.
-    auth_rate_limit: str = "10/minute"
 
     # ── Ingestion ────────────────────────────────────────────
     ingest_max_pages: int = Field(20, ge=1)
@@ -92,33 +86,12 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def _enforce_production_safety(self) -> "Settings":
-        """Fail closed: refuse to boot a production instance that is insecure.
-
-        Signing tokens with the public sentinel means anyone can forge an admin
-        JWT, and seeding a known admin password is the same class of hole. A
-        loud crash at deploy time beats a silent breach.
-        """
+        """Refuse to boot in production with no LLM key — better a loud crash
+        at deploy time than silently serving mock answers behind /health."""
         if not self.is_production:
-            if self.jwt_secret == INSECURE_JWT_DEFAULT:
-                logging.getLogger(__name__).warning(
-                    "JWT_SECRET is not set — using the insecure development default. "
-                    "Do NOT use this in production."
-                )
             return self
 
         problems = []
-        if self.jwt_secret == INSECURE_JWT_DEFAULT:
-            problems.append(
-                "JWT_SECRET is unset (using the insecure built-in default). "
-                "Generate one with `openssl rand -hex 32`."
-            )
-        if len(self.jwt_secret) < 32:
-            problems.append("JWT_SECRET must be at least 32 characters in production.")
-        if not self.admin_password:
-            problems.append(
-                "ADMIN_PASSWORD must be set in production to seed the admin account. "
-                "Refusing to create an admin with a known default."
-            )
         if not self.google_api_key:
             problems.append(
                 "GOOGLE_API_KEY must be set in production. Without it the app would "
@@ -160,7 +133,6 @@ def configure_logging() -> None:
 settings = get_settings()
 
 __all__ = [
-    "INSECURE_JWT_DEFAULT",
     "Settings",
     "configure_logging",
     "get_settings",

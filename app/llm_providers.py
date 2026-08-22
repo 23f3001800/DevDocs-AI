@@ -1,19 +1,9 @@
-"""
-LLM abstraction. Gemini is the single supported provider.
+"""LLM abstraction. Gemini is the single supported provider.
 
-WHY keep a manager at all with one provider? Two reasons:
-  1. `chain.py` depends only on the `generate` / `stream` interface, so adding
-     or swapping a provider stays a one-file change.
-  2. The MockProvider path keeps CI and offline development working without an
-     API key — but it is refused in production (see `_init_providers`), because
-     silently answering real users with "Mock response (testing mode)" while
-     /health stays green is worse than failing to start.
-
-Usage:
-    from app.llm_providers import llm_manager
-    response = llm_manager.generate(system, user_message)
-    async for token in llm_manager.stream(system, user_message):
-        ...
+The manager keeps chain.py behind a stable generate/stream interface and
+provides the MockProvider path for CI/offline work — which is refused in
+production (see `_init_providers`) so a missing key fails loud instead of
+silently serving mock text behind a green /health.
 """
 
 import logging
@@ -37,12 +27,14 @@ class LLMResponse:
 class GeminiProvider:
     name = "gemini"
 
-    def __init__(self):
+    def __init__(self, api_key: str | None = None):
         # Imported lazily so the SDK is only loaded when actually used.
         from google import genai
 
         settings = get_settings()
-        self.client = genai.Client(api_key=settings.google_api_key)
+        # BYOK: api_key (when given) is scoped to this one throwaway client —
+        # never written back to settings or any shared state.
+        self.client = genai.Client(api_key=api_key or settings.google_api_key)
         self.model = settings.gemini_model
 
     def _config(self, system: str, max_tokens: int):
@@ -135,8 +127,22 @@ class LLMManager:
     def provider_names(self) -> list[str]:
         return [p.name for p in self.providers]
 
-    def generate(self, system: str, user_message: str, max_tokens: int = 1024) -> LLMResponse:
-        """Synchronous generation, trying each provider in order."""
+    def _byok_provider(self, api_key: str) -> GeminiProvider:
+        """One-off Gemini provider bound to the caller's own key. A separate
+        method so tests can monkeypatch just this construction step."""
+        return GeminiProvider(api_key=api_key)
+
+    def generate(
+        self, system: str, user_message: str, max_tokens: int = 1024, api_key: str | None = None
+    ) -> LLMResponse:
+        """`api_key` (BYOK): if given, use only a per-request Gemini client
+        built from that key — no fallback chain."""
+        if api_key:
+            provider = self._byok_provider(api_key)
+            result = provider.generate(system, user_message, max_tokens)
+            log.info("LLM response from %s (BYOK)", provider.name)
+            return result
+
         errors = []
         for provider in self.providers:
             try:
@@ -152,15 +158,22 @@ class LLMManager:
             + "; ".join(f"{name}: {err}" for name, err in errors)
         )
 
-    async def stream(self, system: str, user_message: str, max_tokens: int = 1024):
+    async def stream(
+        self, system: str, user_message: str, max_tokens: int = 1024, api_key: str | None = None
+    ):
         """Async streaming with fallback — but only *before* the first token.
+        The `yielded` guard stops a mid-stream failure from restarting on
+        another provider and duplicating already-sent output.
 
-        WHY the `yielded` guard? Falling through to another provider after
-        tokens have already reached the client concatenates a partial answer
-        with a complete one, and the user sees the same question answered twice
-        in a single message. Once we have committed output, a mid-stream failure
-        must be reported in-band, not retried.
+        `api_key` (BYOK): if given, stream only from a per-request Gemini
+        client built from that key — no fallback chain.
         """
+        if api_key:
+            provider = self._byok_provider(api_key)
+            async for token in provider.stream(system, user_message, max_tokens):
+                yield token
+            return
+
         errors = []
         yielded = False
         for provider in self.providers:

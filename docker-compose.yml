@@ -16,7 +16,7 @@ services:
       HF_HUB_OFFLINE: ${HF_HUB_OFFLINE:-1}
     volumes:
       # Containers are ephemeral — anything stateful needs a volume or it is
-      # gone on the next deploy. chroma_db holds the index; data holds users.
+      # gone on the next deploy. chroma_db holds the index; data holds per-session state.
       - ./chroma_db:/app/chroma_db
       - ./data:/app/data
     restart: unless-stopped
