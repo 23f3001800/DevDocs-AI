@@ -1,10 +1,5 @@
-"""
-Shared singleton for HybridRetriever.
-
-WHY a separate module? Both chain.py and main.py need the same retriever
-instance. If chain.py created one at import time AND main.py created another in
-lifespan(), we would waste ~400 MB of RAM (2x CrossEncoder + 2x BM25 index).
-"""
+"""Shared HybridRetriever singleton — chain.py and main.py reuse one instance
+so we don't pay ~400 MB twice (2x CrossEncoder + 2x BM25 index)."""
 
 import logging
 import threading
@@ -17,12 +12,8 @@ _lock = threading.Lock()
 
 
 def get_retriever():
-    """Lazy-init the HybridRetriever singleton (thread-safe).
-
-    Double-checked locking: the outer check keeps the hot path lock-free once
-    the instance exists, the inner check (under the lock) stops two racing
-    threads from each building a ~400 MB retriever.
-    """
+    """Lazy-init the HybridRetriever singleton with double-checked locking
+    (hot path stays lock-free; the lock stops two threads double-building it)."""
     global _retriever
     if _retriever is None:
         with _lock:
@@ -34,12 +25,8 @@ def get_retriever():
 
 
 def warm():
-    """Pre-warm all models with a dummy query.
-
-    Forces the SentenceTransformer load, the first embedding computation, and
-    the first CrossEncoder predict() — each of which is far slower than every
-    subsequent call. After this the first real user query has no cold start.
-    """
+    """Pre-warm the models with a dummy query so the first real query pays no
+    cold start (SentenceTransformer load, first embed, first CrossEncoder predict)."""
     t0 = time.time()
     get_retriever().retrieve("warmup query", k=1)
     log.info("Retriever pre-warmed in %.0fms", (time.time() - t0) * 1000)

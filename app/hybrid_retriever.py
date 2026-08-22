@@ -32,10 +32,8 @@ log = logging.getLogger(__name__)
 class HybridRetriever:
     def __init__(self, k_rrf: int | None = None):
         settings = get_settings()
-        # WHY Reciprocal Rank Fusion? Dense returns cosine scores in [0,1];
-        # BM25 returns unbounded scores. You cannot average or add them — the
-        # scales differ and shift per query. RRF discards scores and uses only
-        # rank, making it scale-invariant and tuning-free.
+        # RRF fuses on rank, not score, so dense (cosine) and BM25 (unbounded)
+        # combine scale-invariantly without per-query tuning.
         self.k_rrf = settings.rrf_k if k_rrf is None else k_rrf
         self.default_initial_k = settings.retrieval_initial_k
         self.vs = VectorStore()
@@ -46,21 +44,12 @@ class HybridRetriever:
         self.reranker = CrossEncoder(settings.reranker_model)
 
     def rebuild_bm25(self) -> int:
-        """(Re)build the BM25 index from Chroma. Returns the document count.
+        """(Re)build the in-memory BM25 index from Chroma. Returns the doc count.
 
-        WHY this is public and called after ingest: the index is in-memory and
-        was previously built exactly once, in __init__. Because the retriever is
-        a process-wide singleton, every chunk added by /ingest afterwards was
-        visible to dense search (which queries Chroma live) but invisible to
-        sparse search until the process restarted — so newly ingested exact
-        identifiers, the very thing BM25 exists for, could not be found.
-
-        WHY is the Chroma read inside the lock too, not just build_index? Two
-        concurrent rebuilds (e.g. two /ingest jobs finishing close together)
-        could otherwise interleave: rebuild A reads a snapshot, rebuild B reads
-        a newer snapshot and builds first, then rebuild A's stale snapshot
-        overwrites it — silently reverting the index. Snapshot-then-build must
-        be one atomic unit.
+        Called after /ingest so newly added chunks become visible to sparse
+        search (dense already queries Chroma live). The Chroma read is inside
+        the lock so concurrent rebuilds can't interleave and revert the index —
+        snapshot-then-build must be atomic.
         """
         with self._bm25_lock:
             result = self.vs.all_documents()
@@ -73,21 +62,25 @@ class HybridRetriever:
         log.info("BM25 index built: %d docs", len(documents))
         return len(documents)
 
-    def retrieve(self, query: str, k: int = 5, initial_k: int | None = None) -> list[dict]:
-        """Dense + BM25 → RRF merge → cross-encoder rerank → top-k."""
+    def retrieve(
+        self, query: str, k: int = 5, initial_k: int | None = None, owner: str | None = None
+    ) -> list[dict]:
+        """Dense + BM25 → RRF merge → cross-encoder rerank → top-k.
+
+        `owner` scopes retrieval to that session's chunks (`None` searches
+        everyone — offline scripts only). Filtered at both recall stages so
+        RRF and the reranker only ever see candidates the caller may read.
+        """
         t0 = time.time()
         initial_k = initial_k or self.default_initial_k
 
-        dense = self.vs.query(query, k=initial_k)
+        dense = self.vs.query(query, k=initial_k, owner=owner)
         with self._bm25_lock:
-            sparse = self.bm25.search(query, k=initial_k)
+            sparse = self.bm25.search(query, k=initial_k, owner=owner)
 
         # ── Stage 2: RRF merge ───────────────────────────────
-        # Keyed on chunk ID, not document text: hashing full documents is
-        # wasteful, and two chunks with identical content (shared boilerplate,
-        # duplicated licence headers) would collapse into one entry carrying
-        # whichever metadata arrived first — so a citation could name the wrong
-        # file.
+        # Keyed on chunk ID, not text: identical content (shared boilerplate)
+        # would otherwise collapse into one entry and mis-attribute a citation.
         rrf_scores: dict[str, float] = {}
         by_id: dict[str, dict] = {}
         for hits in (dense, sparse):
@@ -99,23 +92,14 @@ class HybridRetriever:
         if not rrf_scores:
             return []
 
-        # WHY not slice this to [:initial_k]? rrf_scores already only contains
-        # ids from the two initial_k-capped lists above, so the fused union is
-        # at most 2*initial_k — but truncating it *again* here by RRF score,
-        # before reranking, used to drop candidates that only one retriever
-        # found. A sparse-only exact match (an identifier, an error code) can
-        # rank #1 in BM25 and not appear in dense at all; its RRF score then
-        # comes from a single list and can land outside the top initial_k,
-        # even though the cross-encoder — which has not seen it yet — might
-        # judge it the single best match. Reranking the full union lets stage 3
-        # have the final say, which is the whole point of running it at all.
+        # Rerank the full fused union (already <= 2*initial_k), not a re-sliced
+        # top-initial_k: a sparse-only exact match can have a low RRF score yet
+        # be the reranker's best pick. Truncating here would hide it from stage 3.
         candidate_ids = sorted(rrf_scores, key=rrf_scores.get, reverse=True)
 
         # ── Stage 3: cross-encoder rerank ────────────────────
-        # A bi-encoder must compress a document into a vector without knowing
-        # the question. A cross-encoder sees [query, doc] together with full
-        # cross-attention, so it is markedly more accurate — and cannot be
-        # precomputed, which is why it only runs on the shortlist.
+        # A cross-encoder sees [query, doc] together, so it's more accurate than
+        # a bi-encoder but can't be precomputed — hence it runs only on the shortlist.
         pairs = [[query, by_id[doc_id]["content"]] for doc_id in candidate_ids]
         scores = self.reranker.predict(pairs)
         reranked = sorted(zip(candidate_ids, scores), key=lambda x: x[1], reverse=True)[:k]

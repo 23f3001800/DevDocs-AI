@@ -8,13 +8,15 @@ late. Setting the environment here guarantees every app module comes up pointed
 at a throwaway directory.
 
 Without this, the suite wrote to the real ./data/devdocs.db and ./chroma_db,
-leaving `testuser`/`dupuser`/`testadmin` behind between runs, making tests
-order-dependent and letting a stale local DB disagree with CI.
+leaving rows behind between runs, making tests order-dependent and letting a
+stale local DB disagree with CI.
 """
 
+import itertools
 import os
 import shutil
 import tempfile
+import uuid
 from pathlib import Path
 
 import pytest
@@ -22,9 +24,9 @@ import pytest
 _TMP = Path(tempfile.mkdtemp(prefix="devdocs-tests-"))
 
 os.environ["APP_ENV"] = "development"
-os.environ["DB_PATH"] = str(_TMP / "users.db")
+os.environ["DB_PATH"] = str(_TMP / "sessions.db")
 os.environ["CHROMA_PATH"] = str(_TMP / "chroma")
-os.environ["JWT_SECRET"] = "test-only-secret-not-used-in-any-real-deployment"
+os.environ["UPLOAD_DIR"] = str(_TMP / "uploads")
 # Explicitly blank, not merely absent: pydantic-settings also reads the real
 # .env file, which does carry a GOOGLE_API_KEY. A set-but-empty environment
 # variable wins over the file, so LLMManager falls back to MockProvider and the
@@ -33,11 +35,10 @@ os.environ["GOOGLE_API_KEY"] = ""
 os.environ["LANGCHAIN_TRACING_V2"] = "false"
 # Every request from TestClient shares one socket peer ("testclient"), so
 # without this every test in the suite would fall into the SAME per-IP rate
-# limit bucket for /auth/*, /ask and /ingest — tripping AUTH_RATE_LIMIT
-# (intentionally tight, 10/minute) well before the suite finishes. Trusting
-# X-Forwarded-For here lets tests that care about isolation supply a distinct
-# fake client IP per call; tests that don't set the header keep behaving
-# exactly as before.
+# limit bucket for /ask and /ingest — tripping ASK_RATE_LIMIT / INGEST_RATE_LIMIT
+# well before the suite finishes. Trusting X-Forwarded-For here lets tests
+# that care about isolation supply a distinct fake client IP per call; tests
+# that don't set the header keep behaving exactly as before.
 os.environ["TRUST_PROXY_HEADERS"] = "true"
 
 
@@ -60,3 +61,27 @@ def tmp_env(monkeypatch):
 
     yield _set
     get_settings.cache_clear()
+
+
+# ── Anonymous session headers ────────────────────────────────
+# No login: every caller is identified by a client-generated X-Session-Id
+# header. Shared helpers for the test modules that hit the API via TestClient.
+_ip_counter = itertools.count(1)
+
+
+def new_session_id() -> str:
+    return str(uuid.uuid4())
+
+
+def fresh_ip_headers() -> dict:
+    """A distinct fake client IP per call, so per-IP rate limits (keyed via
+    TRUST_PROXY_HEADERS=true above) don't lump every test into one bucket."""
+    n = next(_ip_counter)
+    return {"X-Forwarded-For": f"10.{(n >> 16) % 256}.{(n >> 8) % 256}.{n % 256}"}
+
+
+def session_headers(session_id: str | None = None) -> dict:
+    """Headers for a request from a fresh (or given) anonymous session."""
+    headers = fresh_ip_headers()
+    headers["X-Session-Id"] = session_id or new_session_id()
+    return headers

@@ -11,55 +11,8 @@
     <link rel="stylesheet" href="styles.css">
 </head>
 <body>
-    <!-- ── Auth Screen ───────────────────────────────────── -->
-    <div id="auth-screen" class="screen active">
-        <div class="auth-container">
-            <div class="auth-brand">
-                <div class="brand-icon">
-                    <svg width="48" height="48" viewBox="0 0 48 48" fill="none">
-                        <rect width="48" height="48" rx="12" fill="url(#brand-grad)"/>
-                        <path d="M14 18h20M14 24h14M14 30h18" stroke="white" stroke-width="2.5" stroke-linecap="round"/>
-                        <circle cx="36" cy="32" r="6" fill="#34d399" stroke="white" stroke-width="2"/>
-                        <path d="M34 32l1.5 1.5L38 31" stroke="white" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
-                        <defs>
-                            <linearGradient id="brand-grad" x1="0" y1="0" x2="48" y2="48">
-                                <stop stop-color="#6366f1"/>
-                                <stop offset="1" stop-color="#8b5cf6"/>
-                            </linearGradient>
-                        </defs>
-                    </svg>
-                </div>
-                <h1>DevDocs AI</h1>
-                <p class="auth-subtitle">Intelligent answers from your documentation</p>
-            </div>
-
-            <div class="auth-card glass">
-                <div class="auth-tabs">
-                    <button class="auth-tab active" data-tab="login">Sign In</button>
-                    <button class="auth-tab" data-tab="register">Create Account</button>
-                </div>
-
-                <form id="auth-form" class="auth-form">
-                    <div class="form-group">
-                        <label for="username">Username</label>
-                        <input type="text" id="username" name="username" placeholder="Enter username" required minlength="3" autocomplete="username">
-                    </div>
-                    <div class="form-group">
-                        <label for="password">Password</label>
-                        <input type="password" id="password" name="password" placeholder="Enter password" required minlength="6" autocomplete="current-password">
-                    </div>
-                    <div id="auth-error" class="auth-error hidden" role="alert" aria-live="polite"></div>
-                    <button type="submit" id="auth-submit" class="btn-primary">
-                        <span class="btn-text">Sign In</span>
-                        <span class="btn-loader hidden"></span>
-                    </button>
-                </form>
-            </div>
-        </div>
-    </div>
-
-    <!-- ── Main App Screen ───────────────────────────────── -->
-    <div id="app-screen" class="screen">
+    <!-- ── Main App Screen (opens directly — no login wall) ─── -->
+    <div id="app-screen" class="screen active">
         <!-- Mobile menu toggle (hamburger) -->
         <button id="menu-toggle" class="menu-toggle" aria-label="Toggle menu" aria-expanded="false" aria-controls="sidebar">
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
@@ -90,30 +43,32 @@
                     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
                     Chat
                 </button>
+                <button class="nav-item" data-view="history" id="nav-history">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 16 14"/></svg>
+                    History
+                </button>
                 <button class="nav-item" data-view="ingest" id="nav-ingest">
                     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
                     Ingest Docs
                 </button>
-                <button class="nav-item admin-only" data-view="metrics" id="nav-metrics">
+                <button class="nav-item" data-view="metrics" id="nav-metrics">
                     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
                     Metrics
-                </button>
-                <button class="nav-item admin-only" data-view="users" id="nav-users">
-                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
-                    Users
                 </button>
             </nav>
 
             <div class="sidebar-footer">
                 <div class="user-info">
-                    <div class="user-avatar" id="user-avatar">U</div>
+                    <div class="user-avatar" id="user-avatar">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+                    </div>
                     <div class="user-details">
-                        <span class="user-name" id="user-name">—</span>
-                        <span class="user-role" id="user-role">—</span>
+                        <span class="user-name">Guest session</span>
+                        <span class="user-role" id="key-status-badge">No API key</span>
                     </div>
                 </div>
-                <button id="logout-btn" class="btn-ghost" title="Sign out" aria-label="Sign out">
-                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+                <button id="api-key-btn" class="btn-ghost" title="API key settings" aria-label="API key settings">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
                 </button>
             </div>
         </aside>
@@ -123,6 +78,11 @@
             <!-- Chat View -->
             <div id="view-chat" class="view active">
                 <div class="chat-container">
+                    <div class="chat-topbar">
+                        <span id="chat-conversation-title" class="chat-conversation-title">New conversation</span>
+                        <button id="new-chat-btn" class="btn-ghost-text" type="button">+ New chat</button>
+                    </div>
+
                     <div id="messages" class="messages">
                         <div class="welcome-message">
                             <div class="welcome-icon">
@@ -150,10 +110,14 @@
                     </div>
 
                     <div class="input-area">
+                        <div id="usage-indicator" class="usage-indicator" role="status" aria-live="polite"></div>
                         <div class="input-wrapper glass">
                             <textarea id="question-input" placeholder="Ask about your documentation..." rows="1" aria-label="Ask about your documentation"></textarea>
                             <button id="send-btn" class="send-btn" disabled title="Send message (Enter)" aria-label="Send message (Enter)">
                                 <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+                            </button>
+                            <button id="stop-btn" class="send-btn stop-btn hidden" type="button" title="Stop generating" aria-label="Stop generating">
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
                             </button>
                         </div>
                         <p class="input-hint">Press <kbd>Enter</kbd> to send, <kbd>Shift+Enter</kbd> for new line</p>
@@ -161,35 +125,108 @@
                 </div>
             </div>
 
-            <!-- Ingest View (Admin) -->
+            <!-- History View -->
+            <div id="view-history" class="view">
+                <div class="panel-container">
+                    <div class="panel-header history-header">
+                        <div>
+                            <h2>Conversation History</h2>
+                            <p>Browse and reopen your past conversations.</p>
+                        </div>
+                        <button id="new-chat-from-history" class="btn-secondary" type="button">+ New chat</button>
+                    </div>
+                    <div id="history-list" class="history-list">
+                        <div class="empty-state">Loading…</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Ingest View -->
             <div id="view-ingest" class="view">
                 <div class="panel-container">
                     <div class="panel-header">
                         <h2>Ingest Documentation</h2>
-                        <p>Add a GitHub repository, documentation URL, or PDF to the knowledge base.</p>
+                        <p>Add a GitHub repository, documentation URL, PDF, or search by topic to build the knowledge base.</p>
                     </div>
+
                     <div class="panel-card glass">
-                        <form id="ingest-form">
+                        <div class="ingest-tabs" aria-label="Source type">
+                            <button type="button" class="ingest-tab active" data-source-tab="github" aria-pressed="true">📦 GitHub repo</button>
+                            <button type="button" class="ingest-tab" data-source-tab="docs" aria-pressed="false">🌐 Docs URL</button>
+                            <button type="button" class="ingest-tab" data-source-tab="pdf" aria-pressed="false">📄 PDF upload</button>
+                            <button type="button" class="ingest-tab" data-source-tab="topic" aria-pressed="false">🔎 Topic search</button>
+                        </div>
+
+                        <!-- GitHub repo -->
+                        <form id="ingest-github-form" class="ingest-panel" data-panel="github">
                             <div class="form-group">
-                                <label for="ingest-source">Source URL or Path</label>
-                                <input type="text" id="ingest-source" placeholder="https://github.com/user/repo or https://docs.example.com" required>
+                                <label for="ingest-github-url">GitHub repository URL</label>
+                                <input type="url" id="ingest-github-url" placeholder="https://github.com/user/repo" required>
                             </div>
-                            <div class="source-hints">
-                                <span class="hint-tag">📦 GitHub repos</span>
-                                <span class="hint-tag">🌐 Web URLs</span>
-                                <span class="hint-tag">📄 PDF files</span>
-                            </div>
-                            <div id="ingest-status" class="status-message hidden" role="status" aria-live="polite"></div>
                             <button type="submit" class="btn-primary">
                                 <span class="btn-text">Start Ingestion</span>
                                 <span class="btn-loader hidden"></span>
                             </button>
                         </form>
+
+                        <!-- Docs URL -->
+                        <form id="ingest-docs-form" class="ingest-panel hidden" data-panel="docs">
+                            <div class="form-group">
+                                <label for="ingest-docs-url">Documentation URL</label>
+                                <input type="url" id="ingest-docs-url" placeholder="https://docs.example.com" required>
+                            </div>
+                            <button type="submit" class="btn-primary">
+                                <span class="btn-text">Start Ingestion</span>
+                                <span class="btn-loader hidden"></span>
+                            </button>
+                        </form>
+
+                        <!-- PDF upload -->
+                        <div class="ingest-panel hidden" data-panel="pdf">
+                            <div id="pdf-dropzone" class="dropzone" tabindex="0" role="button" aria-label="Upload PDF: drag and drop a file here, or press Enter to choose a file">
+                                <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+                                <p>Drag &amp; drop a PDF here, or <span class="dropzone-link">choose a file</span></p>
+                                <p class="dropzone-hint">PDF only, up to 20MB</p>
+                            </div>
+                            <!-- Kept OUTSIDE #pdf-dropzone: an <input> nested in an element whose own
+                                 click handler calls input.click() would have its bubbling click event
+                                 re-trigger that same handler (double dialog / recursive click). -->
+                            <input type="file" id="pdf-file-input" accept="application/pdf,.pdf" class="visually-hidden" tabindex="-1">
+                            <div id="pdf-file-info" class="file-info hidden"></div>
+                            <div id="pdf-status" class="status-message hidden" role="status" aria-live="polite"></div>
+                        </div>
+
+                        <!-- Topic search -->
+                        <div class="ingest-panel hidden" data-panel="topic">
+                            <form id="ingest-topic-form">
+                                <div class="form-group">
+                                    <label for="ingest-topic-query">Search for documentation by topic</label>
+                                    <input type="text" id="ingest-topic-query" placeholder="e.g. FastAPI dependency injection" minlength="2" required>
+                                </div>
+                                <button type="submit" class="btn-secondary">
+                                    <span class="btn-text">Search</span>
+                                    <span class="btn-loader hidden"></span>
+                                </button>
+                            </form>
+                            <div id="topic-results" class="topic-results hidden"></div>
+                        </div>
+
+                        <div id="ingest-status" class="status-message hidden" role="status" aria-live="polite"></div>
+                    </div>
+
+                    <div class="panel-card glass sources-card">
+                        <div class="panel-card-header">
+                            <h3>My Sources</h3>
+                            <button id="refresh-sources" class="btn-ghost-text" type="button">Refresh</button>
+                        </div>
+                        <div id="my-sources-list" class="sources-list">
+                            <div class="empty-state">Loading…</div>
+                        </div>
                     </div>
                 </div>
             </div>
 
-            <!-- Metrics View (Admin) -->
+            <!-- Metrics View -->
             <div id="view-metrics" class="view">
                 <div class="panel-container">
                     <div class="panel-header">
@@ -241,32 +278,38 @@
                     <button id="refresh-metrics" class="btn-secondary">Refresh Metrics</button>
                 </div>
             </div>
-
-            <!-- Users View (Admin) -->
-            <div id="view-users" class="view">
-                <div class="panel-container">
-                    <div class="panel-header">
-                        <h2>User Management</h2>
-                        <p>View all registered users and their roles.</p>
-                    </div>
-                    <div class="panel-card glass">
-                        <table class="users-table" id="users-table">
-                            <thead>
-                                <tr>
-                                    <th>ID</th>
-                                    <th>Username</th>
-                                    <th>Role</th>
-                                    <th>Created</th>
-                                </tr>
-                            </thead>
-                            <tbody id="users-tbody">
-                                <tr><td colspan="4" class="empty-state">Loading...</td></tr>
-                            </tbody>
-                        </table>
-                    </div>
-                </div>
-            </div>
         </main>
+    </div>
+
+    <!-- ── Delete-conversation confirmation modal ─────────── -->
+    <div id="confirm-modal" class="modal-overlay hidden">
+        <div class="modal glass" role="dialog" aria-modal="true" aria-labelledby="confirm-modal-title">
+            <h3 id="confirm-modal-title">Delete conversation</h3>
+            <p id="confirm-modal-body">Delete this conversation?</p>
+            <div class="modal-actions">
+                <button id="confirm-cancel" class="btn-secondary" type="button">Cancel</button>
+                <button id="confirm-history-only" class="btn-secondary danger" type="button">Delete history only</button>
+                <button id="confirm-history-docs" class="btn-primary danger" type="button">Delete history + my documents</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ── API key (BYOK) settings modal ───────────────────── -->
+    <div id="api-key-modal" class="modal-overlay hidden">
+        <div class="modal glass" role="dialog" aria-modal="true" aria-labelledby="api-key-modal-title">
+            <h3 id="api-key-modal-title">Gemini API key</h3>
+            <p>Add your own Gemini API key to skip the daily free-question limit. It's stored only in this browser and sent with your requests.</p>
+            <div class="form-group">
+                <label for="api-key-input">API key</label>
+                <input type="password" id="api-key-input" placeholder="Paste your Gemini API key" autocomplete="off" spellcheck="false">
+            </div>
+            <div id="api-key-modal-error" class="form-error hidden" role="alert" aria-live="polite"></div>
+            <div class="modal-actions">
+                <button id="api-key-cancel" class="btn-secondary" type="button">Cancel</button>
+                <button id="api-key-clear" class="btn-secondary danger" type="button">Clear key</button>
+                <button id="api-key-save" class="btn-primary" type="button">Save key</button>
+            </div>
+        </div>
     </div>
 
     <script src="app.js"></script>

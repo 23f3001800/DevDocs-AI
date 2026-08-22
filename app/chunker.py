@@ -26,9 +26,8 @@ def chunk_documents(docs: list[Document]) -> list[Document]:
 
     Chunk size is the highest-leverage RAG hyperparameter: too small and a fact
     is split across chunks that never co-retrieve; too large and one relevant
-    sentence is diluted by surrounding noise. The sizes are configurable
-    (CHUNK_SIZE_CODE / CHUNK_SIZE_TEXT) precisely so they can be swept against
-    scripts/run_evals.py rather than guessed.
+    sentence is diluted by noise. Sizes are configurable (CHUNK_SIZE_CODE /
+    CHUNK_SIZE_TEXT) so they can be tuned.
     """
     chunked = []
     for doc in docs:

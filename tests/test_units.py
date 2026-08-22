@@ -1,10 +1,10 @@
 """
 Fast, offline unit tests for DevDocs AI.
 
-These cover the pure logic — auth/RBAC, JWT, BM25, chunking, response schema,
-provider fallback, the SSRF guard, and the embedding-cache stats — WITHOUT
-downloading models or calling any paid LLM API. They run in seconds and need no
-secrets, so they make a good CI floor.
+These cover the pure logic — BM25, chunking, response schema, provider
+fallback, the SSRF guard, and the embedding-cache stats — WITHOUT downloading
+models or calling any paid LLM API. They run in seconds and need no secrets,
+so they make a good CI floor.
 
 Run just these:   pytest tests/test_units.py -v
 """
@@ -12,19 +12,16 @@ Run just these:   pytest tests/test_units.py -v
 import os
 import subprocess
 import sys
-from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-import jwt
 import pytest
 from fastapi import HTTPException
 from langchain_core.documents import Document
 from pydantic import ValidationError
 
-from app import auth
 from app.bm25_retriever import BM25Retriever
 from app.chunker import chunk_documents
-from app.llm_providers import LLMManager, LLMResponse, MockProvider
+from app.llm_providers import GeminiProvider, LLMManager, LLMResponse, MockProvider
 from app.main import validate_ingest_source
 from app.models import RAGResponse
 from app.vectorstore import get_cache_stats
@@ -33,88 +30,14 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
 # ─────────────────────────────────────────────────────────────
-# auth.py — password hashing
+# config.py — production fail-fast without a Gemini key
 # ─────────────────────────────────────────────────────────────
-def test_password_hash_roundtrip():
-    hashed = auth.hash_password("s3cret-pw")
-    assert hashed != "s3cret-pw"  # never store plaintext
-    assert auth.verify_password("s3cret-pw", hashed) is True
-    assert auth.verify_password("wrong-pw", hashed) is False
-
-
-def test_password_hash_is_salted():
-    # bcrypt salts each hash — same input, different output
-    assert auth.hash_password("same") != auth.hash_password("same")
-
-
-# ─────────────────────────────────────────────────────────────
-# auth.py — JWT create / decode
-# ─────────────────────────────────────────────────────────────
-def test_jwt_roundtrip_preserves_claims():
-    token = auth.create_token("alice", "admin")
-    payload = auth.decode_token(token)
-    assert payload["sub"] == "alice"
-    assert payload["role"] == "admin"
-
-
-def test_jwt_expired_is_rejected():
-    expired = jwt.encode(
-        {
-            "sub": "bob",
-            "role": "user",
-            "exp": datetime.now(UTC) - timedelta(hours=1),
-        },
-        auth.JWT_SECRET,
-        algorithm=auth.JWT_ALGORITHM,
-    )
-    with pytest.raises(HTTPException) as exc:
-        auth.decode_token(expired)
-    assert exc.value.status_code == 401
-
-
-def test_jwt_tampered_is_rejected():
-    token = auth.create_token("carol", "user")
-    with pytest.raises(HTTPException) as exc:
-        auth.decode_token(token + "tampered")
-    assert exc.value.status_code == 401
-
-
-# ─────────────────────────────────────────────────────────────
-# auth.py — RBAC role hierarchy
-# ─────────────────────────────────────────────────────────────
-def test_require_role_admin_allows_admin():
-    dep = auth.require_role("admin")
-    assert dep(user={"username": "a", "role": "admin"})["role"] == "admin"
-
-
-def test_require_role_admin_blocks_user():
-    dep = auth.require_role("admin")
-    with pytest.raises(HTTPException) as exc:
-        dep(user={"username": "u", "role": "user"})
-    assert exc.value.status_code == 403
-
-
-def test_require_role_user_allows_admin():
-    # admin >= user in the hierarchy, so admin can access user routes
-    dep = auth.require_role("user")
-    assert dep(user={"username": "a", "role": "admin"})["role"] == "admin"
-
-
-def test_require_role_unknown_role_is_denied():
-    dep = auth.require_role("user")
-    with pytest.raises(HTTPException):
-        dep(user={"username": "x", "role": "nonsense"})
-
-
-# ─────────────────────────────────────────────────────────────
-# auth.py — production fail-fast on the insecure JWT default
-# ─────────────────────────────────────────────────────────────
-def _import_auth_with_env(**overrides):
-    """Import app.auth in a clean subprocess with the given env overrides."""
-    env = {k: v for k, v in os.environ.items() if k != "JWT_SECRET"}
+def _import_config_with_env(**overrides):
+    """Import app.config in a clean subprocess with the given env overrides."""
+    env = dict(os.environ)
     env.update(overrides)
     return subprocess.run(
-        [sys.executable, "-c", "import app.auth"],
+        [sys.executable, "-c", "import app.config"],
         cwd=str(_REPO_ROOT),
         env=env,
         capture_output=True,
@@ -122,14 +45,14 @@ def _import_auth_with_env(**overrides):
     )
 
 
-def test_auth_refuses_insecure_default_in_production():
-    result = _import_auth_with_env(APP_ENV="production", JWT_SECRET="dev-secret-change-in-prod")
+def test_config_refuses_production_without_a_google_api_key():
+    result = _import_config_with_env(APP_ENV="production", GOOGLE_API_KEY="")
     assert result.returncode != 0
-    assert "JWT_SECRET" in result.stderr
+    assert "GOOGLE_API_KEY" in result.stderr
 
 
-def test_auth_allows_insecure_default_in_development():
-    result = _import_auth_with_env(APP_ENV="development", JWT_SECRET="dev-secret-change-in-prod")
+def test_config_allows_development_without_a_google_api_key():
+    result = _import_config_with_env(APP_ENV="development", GOOGLE_API_KEY="")
     assert result.returncode == 0
 
 
@@ -306,6 +229,51 @@ async def test_mock_provider_stream():
     assert "Mock response" in out
 
 
+# ── BYOK: per-request Gemini key, no shared/global state ──────
+_NOT_A_REAL_KEY = "n" + "ot-a-real-key"  # not a credential — client is mocked
+
+
+def test_gemini_provider_byok_uses_the_caller_key_not_the_server_key(monkeypatch):
+    from google import genai as genai_mod
+
+    seen = {}
+
+    class _FakeClient:
+        def __init__(self, api_key):
+            seen["api_key"] = api_key
+
+    monkeypatch.setattr(genai_mod, "Client", _FakeClient)
+    GeminiProvider(api_key=_NOT_A_REAL_KEY)
+    assert seen["api_key"] == _NOT_A_REAL_KEY
+
+
+def test_manager_byok_provider_builds_a_gemini_provider_with_the_given_key(monkeypatch):
+    mgr = LLMManager.__new__(LLMManager)
+    seen = {}
+    monkeypatch.setattr(
+        "app.llm_providers.GeminiProvider",
+        lambda api_key=None: seen.setdefault("api_key", api_key),
+    )
+    mgr._byok_provider(_NOT_A_REAL_KEY)
+    assert seen["api_key"] == _NOT_A_REAL_KEY
+
+
+def test_manager_generate_with_api_key_bypasses_the_provider_chain(monkeypatch):
+    """A BYOK call must never fall through to the server's own providers —
+    the caller's key succeeding or failing is entirely on its own."""
+    mgr = _manager_with([_fake_provider("primary", fail=True)])
+    monkeypatch.setattr(mgr, "_byok_provider", lambda api_key: _fake_provider("byok"))
+    resp = mgr.generate("sys", "user", api_key=_NOT_A_REAL_KEY)
+    assert resp.provider == "byok"
+
+
+async def test_manager_stream_with_api_key_bypasses_the_provider_chain(monkeypatch):
+    mgr = _manager_with([_fake_provider("primary", fail=True)])
+    monkeypatch.setattr(mgr, "_byok_provider", lambda api_key: _fake_provider("byok"))
+    out = "".join([tok async for tok in mgr.stream("sys", "user", api_key=_NOT_A_REAL_KEY)])
+    assert out == "ok-byok"
+
+
 # ─────────────────────────────────────────────────────────────
 # main.py — SSRF guard for /ingest sources
 # ─────────────────────────────────────────────────────────────
@@ -332,17 +300,55 @@ def test_validate_ingest_source_allows_public_and_local():
 
 
 # ─────────────────────────────────────────────────────────────
-# auth.py — bcrypt's 72-byte truncation
+# main.py — anonymous session identity (get_session_id)
 # ─────────────────────────────────────────────────────────────
-def test_register_password_over_72_bytes_is_rejected():
-    # bcrypt silently truncates anything past 72 bytes; accepting a longer
-    # password would give a false sense of entropy for the bytes past 72.
-    with pytest.raises(ValidationError):
-        auth.RegisterRequest(username="longpwuser", password="x" * 73)
+class _FakeRequest:
+    """Minimal stand-in exposing just what get_session_id reads."""
+
+    def __init__(self, headers: dict):
+        self.headers = headers
 
 
-def test_register_password_at_72_bytes_is_accepted():
-    auth.RegisterRequest(username="longpwuser", password="x" * 72)
+def test_get_session_id_requires_the_header():
+    from app.main import get_session_id
+
+    with pytest.raises(HTTPException) as exc:
+        get_session_id(_FakeRequest({}))
+    assert exc.value.status_code == 400
+
+
+def test_get_session_id_rejects_a_non_uuid_value():
+    from app.main import get_session_id
+
+    with pytest.raises(HTTPException) as exc:
+        get_session_id(_FakeRequest({"X-Session-Id": "not-a-uuid"}))
+    assert exc.value.status_code == 400
+
+
+def test_get_session_id_canonicalises_case():
+    from app.main import get_session_id
+
+    raw = "550E8400-E29B-41D4-A716-446655440000"
+    assert get_session_id(_FakeRequest({"X-Session-Id": raw})) == raw.lower()
+
+
+# ─────────────────────────────────────────────────────────────
+# database.py — per-session daily usage counter
+# ─────────────────────────────────────────────────────────────
+def test_usage_counter_starts_at_zero_and_increments():
+    import uuid
+
+    from app.database import get_usage_count, increment_usage
+
+    # A fresh, random session id keeps this independent of every other test
+    # sharing the same on-disk test database (see tests/conftest.py).
+    session_id = f"usage-test-{uuid.uuid4().hex}"
+    assert get_usage_count(session_id, day="2026-01-01") == 0
+    assert increment_usage(session_id, day="2026-01-01") == 1
+    assert increment_usage(session_id, day="2026-01-01") == 2
+    assert get_usage_count(session_id, day="2026-01-01") == 2
+    # A different day is a completely independent counter.
+    assert get_usage_count(session_id, day="2026-01-02") == 0
 
 
 # ─────────────────────────────────────────────────────────────

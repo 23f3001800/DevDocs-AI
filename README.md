@@ -1,6 +1,6 @@
 # DevDocs AI
 
-**RAG over any GitHub repo or docs site — built for developers who want instant, grounded answers from their codebase.**
+**RAG over any GitHub repo or docs site — instant, grounded answers from your codebase, no sign-up required.**
 
 [![CI/CD](https://github.com/23f3001800/DevDocs-AI/actions/workflows/ci.yml/badge.svg)](https://github.com/23f3001800/DevDocs-AI/actions)
 [![Docker](https://img.shields.io/badge/docker-ready-blue?logo=docker)](Dockerfile)
@@ -17,7 +17,19 @@ Developers waste **hours** searching through docs, README files, and source code
 - **Hybrid retrieval** (dense + sparse + reranking) for precision
 - **Gemini** for grounded, citation-backed answers
 - **SSE streaming** for instant time-to-first-token
-- **RAGAS evaluation** to prove it actually works
+
+---
+
+## How It Works — Anonymous Per-Session
+
+There is **no login, no account, no roles**. The client generates a UUID and sends it as an `X-Session-Id` header on every request. That session id *is* the owner of everything:
+
+- **Private knowledge base** — chunks you ingest are visible only to your session.
+- **Private chat history** — conversations and messages are scoped to your session.
+- **Free daily limit** — each session gets `FREE_DAILY_LIMIT` (default **5**) free questions per UTC day on the server's Gemini key.
+- **BYOK to continue** — send your own Gemini key as `X-Api-Key` and the daily limit no longer applies (your key, your quota).
+
+Gemini is the only LLM provider. Without a server key the app falls back to a mock provider for local/offline work, and refuses to boot in production.
 
 ---
 
@@ -28,10 +40,10 @@ Developers waste **hours** searching through docs, README files, and source code
 | 🔍 **Hybrid Search** | Dense embeddings (MiniLM) + BM25 sparse + RRF fusion |
 | 🎯 **Cross-Encoder Reranking** | ms-marco-MiniLM-L-6-v2 for final precision |
 | ⚡ **Streaming Answers** | Server-Sent Events, real-time token delivery (~300ms TTFT) |
-| 🔒 **RBAC Auth** | JWT + bcrypt with user/admin roles |
-| 📊 **RAGAS Eval Gate** | Faithfulness, Relevancy, Precision — CI blocks deploys below 0.75 |
+| 🧑‍💻 **Anonymous sessions** | `X-Session-Id` scopes a private KB + chat history — no auth |
+| 🔑 **BYOK** | Bring your own Gemini key to answer past the free daily limit |
 | 🐳 **Production Docker** | Multi-stage, non-root, HEALTHCHECK, CPU-only torch, models baked in |
-| 📈 **Observability** | LangSmith tracing + embedding cache metrics |
+| 📈 **Observability** | Optional LangSmith tracing + embedding cache metrics |
 | 🚀 **Zero Cold Start** | Models baked into the image + pre-warmed on startup |
 
 ---
@@ -48,8 +60,8 @@ graph TB
     end
 
     subgraph Query Pipeline
-        F[User Question] --> G[FastAPI + RBAC Auth]
-        G --> H{Hybrid Retrieval}
+        F[User Question + X-Session-Id] --> G[FastAPI]
+        G --> H{Hybrid Retrieval - session-scoped}
         H --> I[Dense Search - MiniLM]
         H --> J[BM25 Sparse Search]
         I --> K[RRF Merge]
@@ -57,13 +69,6 @@ graph TB
         K --> L[CrossEncoder Rerank]
         L --> M[Gemini - Streaming]
         M --> N[Grounded Answer + Sources]
-    end
-
-    subgraph Evaluation
-        O[Golden Dataset - 15Q] --> P[RAGAS]
-        P --> Q{Avg ≥ 0.75?}
-        Q -->|Yes| R[Deploy ✅]
-        Q -->|No| S[Block ❌]
     end
 
     E -.-> I
@@ -87,9 +92,8 @@ pip install -r requirements.txt
 
 ```bash
 cp .env.example .env
-# Edit .env with your keys:
+# Edit .env with your key:
 #   GOOGLE_API_KEY=...
-#   JWT_SECRET=your-random-secret  (openssl rand -hex 32)
 ```
 
 ### 3. Ingest Documentation
@@ -121,89 +125,73 @@ docker build -t devdocs-ai . && docker run -p 8000:8000 --env-file .env devdocs-
 ### Production configuration
 
 The Docker image sets `APP_ENV=production`, which makes the app **fail-closed** —
-it refuses to start unless these are set explicitly:
+it refuses to start unless these are set:
 
 | Variable | Why it's required |
 |----------|-------------------|
-| `JWT_SECRET` | Without it, tokens are signed with a public constant and anyone can forge an admin JWT. Generate with `openssl rand -hex 32`. |
-| `ADMIN_PASSWORD` | Seeds the auto-created `admin` account. Refuses to fall back to a known default. |
 | `GOOGLE_API_KEY` | Without it the app would silently answer with the mock provider while `/health` stayed green. |
 | `ALLOWED_ORIGINS` | Comma-separated CORS origins. Defaults to `*` — pin to your frontend origin. |
 
-`docker compose` overrides `APP_ENV` to `development` for local runs, so the
-above are optional when developing.
+`docker compose` overrides `APP_ENV` to `development` for local runs.
 
 ---
 
 ## API Reference
 
-### Auth
+Every request carries an `X-Session-Id: <uuid>` header (the frontend generates and
+stores one automatically). Add `X-Api-Key: <your-gemini-key>` to use your own key
+and bypass the free daily limit.
 
-| Endpoint | Method | Body | Description |
-|----------|--------|------|-------------|
-| `/auth/register` | POST | `{username, password}` | Create account → JWT |
-| `/auth/login` | POST | `{username, password}` | Login → JWT |
-| `/auth/me` | GET | — | Current user info |
-| `/auth/logout` | POST | — | Revoke the presented token (server-side denylist) |
-
-### Query (requires `user` role)
+### Query
 
 ```bash
 curl -X POST http://localhost:8000/ask \
-  -H "Authorization: Bearer <token>" \
+  -H "X-Session-Id: 123e4567-e89b-12d3-a456-426614174000" \
   -H "Content-Type: application/json" \
   -d '{"question": "How do I create a POST endpoint in FastAPI?", "k": 5}'
 ```
 
-Responses stream as **Server-Sent Events** with three event types:
-`token` (`{"text": "..."}`), `sources` (`{"sources": [...]}`), then `done`.
-A failure mid-stream arrives as an `error` event — once streaming starts the
-HTTP 200 is already committed, so errors can only be delivered in-band.
-
-### Ingest (requires `user` role)
+Responses stream as **Server-Sent Events**: `token` (`{"text": "..."}`),
+`sources` (`{"sources": [...]}`), then `done`. A failure mid-stream — including
+hitting the free daily limit (`{"code": "limit_reached"}`) — arrives as an
+`error` event, because once streaming starts the HTTP 200 is already committed.
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/ingest` | POST | Queue an ingest → **202** `{job_id}` |
-| `/ingest/{job_id}` | GET | Poll job status (`queued`/`running`/`succeeded`/`failed`) |
+| `/ask` | POST | Ask a question — streams the answer over SSE |
+| `/usage` | GET | Today's free-question usage for this session |
+
+### Ingest
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/ingest` | POST | Queue a repo/URL/PDF ingest → **202** `{job_id}` |
+| `/ingest/upload` | POST | Upload a PDF and queue it → **202** `{job_id}` |
+| `/ingest/{job_id}` | GET | Poll job status (submitter only) |
+| `/search-sources` | POST | Web search for candidate sources to ingest |
+| `/sources/mine` | GET | List the sources this session has ingested |
+| `/sources` | DELETE | Delete every chunk from a source you own |
 
 Ingestion is asynchronous because cloning + chunking + embedding a real
 repository takes minutes, and load balancers cut idle connections at ~230s.
-Any authenticated user may ingest; every submitted URL passes an **SSRF guard**
-(private / loopback / link-local / cloud-metadata addresses are rejected) before
-the server makes any network call. Deleting a source stays admin-only.
+Every submitted URL passes an **SSRF guard** (private / loopback / link-local /
+cloud-metadata addresses are rejected) before the server makes any network call.
 
-### Admin (requires `admin` role)
+### Chat history
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/sources` | DELETE | Purge every chunk from a source |
-| `/metrics` | GET | Operational metrics + cache stats |
-| `/admin/users` | GET | List all registered users |
+| `/conversations` | GET | List this session's conversations |
+| `/conversations` | POST | Create a new (empty) conversation |
+| `/conversations/{id}` | GET | Get a conversation and its messages (owner only) |
+| `/conversations/{id}` | DELETE | Delete a conversation (owner only) |
 
 ### Ops (public)
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
+| `/metrics` | GET | Operational metrics + cache stats |
 | `/health` | GET | Health check + chunk count |
-
----
-
-## RAGAS Evaluation Scores
-
-Every push to `main` triggers the RAGAS eval gate in CI. Deploys are blocked if the average score falls below **0.75**.
-
-| Metric | Threshold | Description |
-|--------|-----------|-------------|
-| Faithfulness | ≥ 0.75 | Is the answer grounded in the retrieved context? |
-| Answer Relevancy | ≥ 0.75 | Does the answer address the question? |
-| Context Precision | ≥ 0.75 | Are the retrieved chunks relevant? |
-
-```bash
-# Generate scores locally
-python -m scripts.run_evals
-# Results → docs/evaluation/ragas_results.json
-```
 
 ---
 
@@ -217,10 +205,9 @@ python -m scripts.run_evals
 | **Sparse Search** | BM25 (rank_bm25) | Catches keyword matches that dense embeddings miss |
 | **Reranker** | CrossEncoder ms-marco | Final precision gate — 10x more accurate than bi-encoder |
 | **Framework** | FastAPI | Async, streaming, auto OpenAPI docs |
-| **Auth** | JWT + bcrypt | Stateless, no session store needed |
-| **Eval** | RAGAS + `gemini-2.5-pro` judge | Stronger model judges the answering model |
-| **Tracing** | LangSmith | Full observability for LLM calls |
-| **CI/CD** | GitHub Actions | lint → test → eval gate → Docker → Azure |
+| **Sessions** | SQLite (per `X-Session-Id`) | Private KB + chat history, no accounts |
+| **Tracing** | LangSmith (optional) | Full observability for LLM calls |
+| **CI/CD** | GitHub Actions | lint → test → Docker → Azure |
 | **Deploy** | Docker + Azure App Service | Multi-stage, non-root, CPU-only torch (~1.5 GB saved) |
 
 ---
@@ -230,32 +217,31 @@ python -m scripts.run_evals
 ```
 DevDocs-AI/
 ├── app/
-│   ├── main.py              # FastAPI app — routes, RBAC, middleware
+│   ├── main.py              # FastAPI app — routes, sessions, middleware
 │   ├── chain.py             # RAG chain — retrieval → Gemini → response
+│   ├── llm_providers.py     # Gemini provider + mock fallback + streaming
 │   ├── hybrid_retriever.py  # Dense + BM25 + RRF + CrossEncoder
 │   ├── vectorstore.py       # ChromaDB + embedding cache
 │   ├── bm25_retriever.py    # BM25 sparse search
 │   ├── chunker.py           # Language-aware text splitting
 │   ├── loaders.py           # GitHub, URL, PDF document loaders
+│   ├── security.py          # SSRF guard for ingest URLs
 │   ├── models.py            # Pydantic response schemas
-│   ├── auth.py              # JWT auth + RBAC (user/admin)
 │   ├── config.py            # Validated settings + fail-closed prod checks
-│   ├── database.py          # SQLite users + JWT revocation denylist
+│   ├── database.py          # SQLite — per-session usage, sources, chat history
 │   └── retriever_instance.py # Shared singleton + pre-warm
 ├── frontend/
 │   ├── index.html           # Chat UI
 │   ├── styles.css           # Dark mode + glassmorphism
 │   └── app.js               # SSE client + markdown render
 ├── scripts/
-│   ├── ingest.py            # CLI ingestion tool
-│   └── run_evals.py         # RAGAS evaluation harness
+│   └── ingest.py            # CLI ingestion tool
 ├── tests/
 │   ├── conftest.py          # Temp DB/Chroma isolation for the whole suite
-│   ├── test_api.py          # API + RBAC integration tests
+│   ├── test_api.py          # API integration tests
 │   ├── test_units.py        # Offline unit tests
 │   ├── test_retrieval.py    # RRF fusion + rerank ordering + chunk IDs
-│   ├── test_stream.py       # SSE framing + stream fallback
-│   └── golden_set.json      # 15-question eval dataset
+│   └── test_stream.py       # SSE framing + stream fallback
 ├── .github/workflows/ci.yml # CI/CD pipeline
 ├── Dockerfile               # Multi-stage production build
 ├── docker-compose.yml       # One-command deployment
@@ -278,31 +264,22 @@ Stated plainly rather than discovered in production:
   different worker returns 404. A shared store or a real task queue is the fix
   once you scale out.
 - **SQLite is on the container filesystem.** On a PaaS without a mounted volume
-  every redeploy wipes the user table and re-seeds `admin`. Mount persistent
-  storage at `/app/data`, or move to Postgres, before treating accounts as
-  durable.
-- **The JWT lives in `localStorage`.** Any XSS on the page can read it. Logout
-  is real (server-side `jti` denylist), but moving to an `httpOnly` + `SameSite`
-  cookie — with CSRF protection — is the stronger posture.
+  every redeploy wipes per-session state. Mount persistent storage at
+  `/app/data`, or move to Postgres, before treating it as durable.
+- **Session ids are unauthenticated.** Anyone who knows a session's UUID can read
+  its KB and history — the id is a bearer secret, not a login. Keep it private.
 - **The SSRF guard has a DNS-rebinding window.** The address is validated, then
   resolved again by `requests`/`git` when the fetch happens. Redirects are
-  refused for the same reason. `/ingest` is open to any authenticated `user`,
-  so this guard is now the primary control — pinning the resolved IP through
-  the fetch (closing the rebinding window) is the stronger posture.
-- **RAGAS judges Gemini with Gemini.** The judge defaults to a stronger model
-  (`gemini-2.5-pro`) than the one answering (`gemini-2.5-flash`), which reduces
-  self-preference bias but does not eliminate it. Read the scores as a
-  regression signal over time, not an absolute quality measure.
+  refused for the same reason. Pinning the resolved IP through the fetch
+  (closing the rebinding window) is the stronger posture.
 
 ---
 
 ## Roadmap
 
-- [ ] 💬 **Conversation memory** — multi-turn chat with context window
 - [ ] 📚 **Multi-repo support** — switch between ingested repos
-- [ ] 🔑 **OAuth providers** — GitHub/Google SSO
 - [ ] 📊 **Analytics dashboard** — query patterns, popular docs
-- [ ] 🧪 **A/B testing** — compare retrieval strategies with RAGAS
+- [ ] 🧪 **A/B testing** — compare retrieval strategies
 
 ---
 

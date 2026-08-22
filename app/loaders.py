@@ -43,12 +43,23 @@ def _revalidate_before_fetch(url: str) -> None:
 
 
 def load_github_repo(repo_url: str) -> list[Document]:
-    """Clone a GitHub repo and load all code + doc files."""
+    """Clone a GitHub repo and load all code + doc files.
+
+    Each Document carries the HEAD commit SHA in metadata["commit_sha"] so
+    chunk ids stay distinct across re-ingests at different commits (versioned,
+    non-destructive) — content dropped later stays retrievable.
+    """
     _revalidate_before_fetch(repo_url)
     tmpdir = tempfile.mkdtemp()
     try:
         log.info("Cloning %s", repo_url)
-        git.Repo.clone_from(repo_url, tmpdir, depth=1)
+        repo = git.Repo.clone_from(repo_url, tmpdir, depth=1)
+        try:
+            commit_sha = repo.head.commit.hexsha
+        except Exception:
+            # Extremely defensive — a clone that "succeeds" with no HEAD
+            # commit would be unusual, but ingest must not crash over it.
+            commit_sha = ""
         docs = []
         for root, dirs, files in os.walk(tmpdir):
             # Slice assignment mutates the list os.walk reads, pruning the
@@ -73,6 +84,7 @@ def load_github_repo(repo_url: str) -> list[Document]:
                                 "file_path": rel_path,
                                 "file_type": ext.lstrip("."),
                                 "is_code": ext in CODE_EXTENSIONS,
+                                "commit_sha": commit_sha,
                             },
                         )
                     )
