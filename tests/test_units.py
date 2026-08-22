@@ -174,11 +174,17 @@ def test_bm25_respects_k_limit():
     assert len(r.search("python api framework", k=1)) <= 1
 
 
-def test_bm25_filters_zero_scores():
+def test_bm25_no_longer_hard_gates_on_positive_score():
+    """The old `if scores[i] > 0` check dropped legitimate matches whenever
+    BM25's IDF went non-positive (common in small/narrow corpora) — ranking is
+    BM25's job, relevance filtering belongs to the downstream reranker."""
     r = BM25Retriever()
     r.build_index(DOCS, METAS, IDS)
-    # A query with no overlapping terms should return nothing (scores are 0)
-    assert r.search("zzzz qqqq xxxx", k=3) == []
+    # Every document scores 0 against these terms, but search() still returns
+    # up to k results ranked by score, rather than hard-filtering them out.
+    results = r.search("zzzz qqqq xxxx", k=2)
+    assert len(results) == 2
+    assert all(hit["score"] == 0.0 for hit in results)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -323,6 +329,65 @@ def test_validate_ingest_source_allows_public_and_local():
     # Public host and non-URL local paths should pass without raising.
     validate_ingest_source("https://github.com/tiangolo/fastapi")
     validate_ingest_source("/data/manual.pdf")
+
+
+# ─────────────────────────────────────────────────────────────
+# auth.py — bcrypt's 72-byte truncation
+# ─────────────────────────────────────────────────────────────
+def test_register_password_over_72_bytes_is_rejected():
+    # bcrypt silently truncates anything past 72 bytes; accepting a longer
+    # password would give a false sense of entropy for the bytes past 72.
+    with pytest.raises(ValidationError):
+        auth.RegisterRequest(username="longpwuser", password="x" * 73)
+
+
+def test_register_password_at_72_bytes_is_accepted():
+    auth.RegisterRequest(username="longpwuser", password="x" * 72)
+
+
+# ─────────────────────────────────────────────────────────────
+# main.py — job store eviction must never drop in-flight work
+# ─────────────────────────────────────────────────────────────
+def test_evict_completed_jobs_never_drops_queued_or_running():
+    """The bug: plain FIFO (`_jobs.popitem(last=False)`) evicted the oldest
+    entry regardless of status, which could be a job that hadn't run yet —
+    silently discarding it. Eviction must only ever remove terminal jobs."""
+    from app import main as m
+
+    saved = dict(m._jobs)
+    m._jobs.clear()
+    try:
+        for i in range(m._JOBS_MAX):
+            m._jobs[f"queued-{i}"] = {"job_id": f"queued-{i}", "status": "queued"}
+        m._jobs["running-0"] = {"job_id": "running-0", "status": "running"}
+        m._jobs["done-0"] = {"job_id": "done-0", "status": "succeeded"}
+        m._jobs["done-1"] = {"job_id": "done-1", "status": "failed"}
+
+        m._evict_completed_jobs()
+
+        # Only the two terminal jobs were eligible, so exactly they were
+        # dropped — every queued/running job survives, even over the cap.
+        assert "done-0" not in m._jobs
+        assert "done-1" not in m._jobs
+        assert "running-0" in m._jobs
+        assert all(f"queued-{i}" in m._jobs for i in range(m._JOBS_MAX))
+    finally:
+        m._jobs.clear()
+        m._jobs.update(saved)
+
+
+def test_evict_completed_jobs_is_a_noop_under_the_cap():
+    from app import main as m
+
+    saved = dict(m._jobs)
+    m._jobs.clear()
+    try:
+        m._jobs["a"] = {"job_id": "a", "status": "succeeded"}
+        m._evict_completed_jobs()
+        assert "a" in m._jobs  # under _JOBS_MAX — nothing to evict yet
+    finally:
+        m._jobs.clear()
+        m._jobs.update(saved)
 
 
 # ─────────────────────────────────────────────────────────────

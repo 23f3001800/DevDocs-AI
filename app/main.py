@@ -1,8 +1,6 @@
-import ipaddress
 import json
 import logging
 import pathlib
-import socket
 import time
 import uuid
 from collections import OrderedDict, defaultdict, deque
@@ -31,6 +29,7 @@ from app.auth import (
 )
 from app.chain import ask_stream, get_llm_stats
 from app.config import configure_logging, get_settings
+from app.security import SSRFError, resolve_public_ips
 from app.vectorstore import VectorStore, collection_count, get_cache_stats
 from scripts.ingest import ingest as run_ingest
 
@@ -142,10 +141,11 @@ def validate_ingest_source(source: str) -> None:
     resolved address (an attacker controls DNS, so checking the hostname string
     is useless; you must check the resolved IP).
 
-    ⚠️  Residual risk: DNS is resolved again by requests/git when the fetch
-    actually happens, leaving a rebinding window. `loaders.load_url` refuses to
-    follow redirects for the same reason. Ingest is admin-only, so this is
-    defence-in-depth rather than the only thing standing in the way.
+    ⚠️  DNS is resolved again by requests/git when the fetch actually happens
+    (a rebinding window), so `app.loaders` re-runs this same check immediately
+    before the network hop. This submission-time check exists to fail fast and
+    return a clean 400 instead of a job that silently fails minutes later.
+    `loaders.load_url` also refuses to follow redirects, for the same reason.
     """
     if "://" not in source:
         return  # local path (e.g. /data/manual.pdf) — admin-only, skip URL checks
@@ -159,16 +159,9 @@ def validate_ingest_source(source: str) -> None:
         raise HTTPException(400, "Invalid URL — missing host")
 
     try:
-        infos = socket.getaddrinfo(host, None)
-    except socket.gaierror:
-        raise HTTPException(400, f"Cannot resolve host: {host}")
-
-    for info in infos:
-        ip = ipaddress.ip_address(info[4][0])
-        if not ip.is_global:
-            raise HTTPException(
-                400, f"Refusing to fetch private/internal address ({ip}) for host '{host}'"
-            )
+        resolve_public_ips(host)
+    except SSRFError as e:
+        raise HTTPException(400, str(e))
 
 
 # ── SSE helpers ──────────────────────────────────────────────
@@ -185,13 +178,19 @@ def _sse(event: str, data: dict) -> str:
 
 
 # ── Auth routes (public) ────────────────────────────────────
+# WHY rate-limited? These were the only mutating routes with no limiter,
+# leaving them wide open to credential-stuffing (/auth/login) and account-farm
+# / registration-spam (/auth/register). The bucket is intentionally tighter
+# than /ask or /ingest — a legitimate user logs in rarely; an attacker
+# brute-forcing a password does not.
 @app.post(
     "/auth/register",
     tags=["auth"],
     response_model=AuthResponse,
     summary="Register a new user account",
 )
-async def register(body: RegisterRequest):
+@limiter.limit(settings.auth_rate_limit)
+async def register(request: Request, body: RegisterRequest):
     return register_user(body)
 
 
@@ -201,7 +200,8 @@ async def register(body: RegisterRequest):
     response_model=AuthResponse,
     summary="Login and receive a JWT token",
 )
-async def login(body: LoginRequest):
+@limiter.limit(settings.auth_rate_limit)
+async def login(request: Request, body: LoginRequest):
     return login_user(body)
 
 
@@ -228,13 +228,18 @@ async def ask(request: Request, body: AskRequest, user: dict = Depends(require_r
                     yield _sse("token", {"text": payload})
                 elif kind == "sources":
                     yield _sse("sources", {"sources": payload})
-        except Exception as e:
+        except Exception:
             # Once streaming starts the 200 is already committed, so errors can
             # only be delivered in-band — as a typed event the client can render
-            # differently from answer text.
+            # differently from answer text. WHY a generic message instead of
+            # str(e)? The exception can carry provider internals — quota
+            # details, upstream error bodies, stack fragments — that a client
+            # has no business seeing. The specifics go to the log instead.
             _metrics["chain_errors"] += 1
             log.exception("Streaming chain failed")
-            yield _sse("error", {"message": str(e)})
+            yield _sse(
+                "error", {"message": "Something went wrong answering your question. Please try again."}
+            )
         finally:
             yield _sse("done", {})
 
@@ -255,6 +260,31 @@ async def ask(request: Request, body: AskRequest, user: dict = Depends(require_r
 # store (Redis) or a real task queue is the fix at that point.
 _JOBS_MAX = 100
 _jobs: OrderedDict[str, dict] = OrderedDict()
+
+_TERMINAL_STATUSES = ("succeeded", "failed")
+
+
+def _evict_completed_jobs() -> None:
+    """Trim the job store back to _JOBS_MAX, oldest-first — but ONLY among
+    jobs that are actually done.
+
+    WHY not plain FIFO? `_jobs.popitem(last=False)` evicts the oldest entry
+    regardless of status. Under a burst of submissions that oldest entry can
+    still be "queued" or "running" — evicting it makes it vanish from the
+    registry while `_run_ingest_job` is mid-flight (or about to start), so its
+    own `_jobs.get(job_id)` returns None and the work is silently abandoned.
+    Only "succeeded"/"failed" jobs are safe to drop; they carry nothing that
+    still needs to run.
+    """
+    while len(_jobs) > _JOBS_MAX:
+        for jid, j in _jobs.items():
+            if j.get("status") in _TERMINAL_STATUSES:
+                del _jobs[jid]
+                break
+        else:
+            # Nothing evictable — every remaining job is still in flight.
+            # Better to run briefly over the soft cap than drop live work.
+            break
 
 
 def _run_ingest_job(job_id: str, source: str) -> None:
@@ -305,7 +335,10 @@ async def ingest_endpoint(
     ~230s. The old synchronous handler produced a 504 while the work carried on
     invisibly, with no way to check progress.
     """
-    validate_ingest_source(body.source)  # raises 400 before touching the network
+    # socket.getaddrinfo is a blocking syscall; run it off the event loop so a
+    # slow or hung DNS server can't stall every other request being served by
+    # this worker.
+    await run_in_threadpool(validate_ingest_source, body.source)  # raises 400 before the network
 
     job_id = uuid.uuid4().hex[:12]
     _jobs[job_id] = {
@@ -313,9 +346,9 @@ async def ingest_endpoint(
         "source": body.source,
         "status": "queued",
         "queued_at": datetime.now(UTC).isoformat(),
+        "submitted_by": user["username"],
     }
-    while len(_jobs) > _JOBS_MAX:
-        _jobs.popitem(last=False)
+    _evict_completed_jobs()
 
     # BackgroundTasks runs sync callables in a threadpool, so the blocking
     # clone/embed work never occupies the event loop.
@@ -323,11 +356,16 @@ async def ingest_endpoint(
     return {"job_id": job_id, "status": "queued", "source": body.source}
 
 
-@app.get("/ingest/{job_id}", tags=["ingest"], summary="Poll an ingest job (user or admin)")
+@app.get("/ingest/{job_id}", tags=["ingest"], summary="Poll an ingest job (submitter or admin)")
 async def ingest_status(job_id: str, user: dict = Depends(require_role("user"))):
     job = _jobs.get(job_id)
     if not job:
         raise HTTPException(404, "Unknown job id (it may have been evicted)")
+    # WHY scope by submitter? Job ids are short and returned to the caller, but
+    # nothing stopped a different authenticated user from polling — and reading
+    # the source URL, timing and error text of — any job by guessing its id.
+    if user["role"] != "admin" and job.get("submitted_by") != user["username"]:
+        raise HTTPException(403, "You may only view ingest jobs you submitted")
     return job
 
 

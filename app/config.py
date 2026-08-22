@@ -73,6 +73,10 @@ class Settings(BaseSettings):
     trust_proxy_headers: bool = False
     ask_rate_limit: str = "30/minute"
     ingest_rate_limit: str = "5/minute"
+    # Tighter than ask/ingest on purpose: a legitimate user logs in rarely, an
+    # attacker credential-stuffing /auth/login or spamming /auth/register does
+    # not. Was previously unlimited on both routes.
+    auth_rate_limit: str = "10/minute"
 
     # ── Ingestion ────────────────────────────────────────────
     ingest_max_pages: int = Field(20, ge=1)
