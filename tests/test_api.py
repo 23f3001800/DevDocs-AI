@@ -113,23 +113,25 @@ def test_ask_k_out_of_range():
     assert r.status_code == 422
 
 
-# ── Ingest (requires admin role) ─────────────────────────────
+# ── Ingest (user or admin) ───────────────────────────────────
 def test_ingest_requires_auth():
     r = client.post("/ingest", json={"source": "https://example.com"})
     assert r.status_code in (401, 403)
 
 
-def test_ingest_forbidden_for_user_role():
-    # /ingest is admin-only — a plain user must be rejected with 403.
+def test_ingest_allowed_for_user_role():
+    # /ingest is open to the 'user' role — a plain user must NOT get 403.
+    # (A valid public source is queued and returns 202.)
     headers = _get_auth_headers("regularuser", "pass123456")
     r = client.post("/ingest", json={"source": "https://example.com"}, headers=headers)
-    assert r.status_code == 403
+    assert r.status_code != 403
+    assert r.status_code == 202
 
 
-def test_ingest_blocks_ssrf_metadata_endpoint():
-    # Admin is authorized, but the SSRF guard must reject internal targets
-    # BEFORE the job is queued.
-    headers = _get_admin_headers()
+def test_ingest_blocks_ssrf_even_for_user():
+    # The SSRF guard must reject internal targets BEFORE the job is queued —
+    # and it applies to the 'user' role too, not just admins.
+    headers = _get_auth_headers("ssrfuser", "pass123456")
     r = client.post(
         "/ingest",
         json={"source": "http://169.254.169.254/latest/meta-data/"},
@@ -138,9 +140,10 @@ def test_ingest_blocks_ssrf_metadata_endpoint():
     assert r.status_code == 400
 
 
-def test_ingest_status_requires_admin():
+def test_ingest_status_allowed_for_user():
+    # A user can poll job status; an unknown job is 404 (not 403).
     headers = _get_auth_headers("jobuser", "pass123456")
-    assert client.get("/ingest/does-not-exist", headers=headers).status_code == 403
+    assert client.get("/ingest/does-not-exist", headers=headers).status_code == 404
 
 
 def test_ingest_status_unknown_job_is_404():

@@ -160,18 +160,26 @@ Responses stream as **Server-Sent Events** with three event types:
 A failure mid-stream arrives as an `error` event — once streaming starts the
 HTTP 200 is already committed, so errors can only be delivered in-band.
 
-### Admin (requires `admin` role)
+### Ingest (requires `user` role)
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `/ingest` | POST | Queue an ingest → **202** `{job_id}` |
 | `/ingest/{job_id}` | GET | Poll job status (`queued`/`running`/`succeeded`/`failed`) |
-| `/sources` | DELETE | Purge every chunk from a source |
-| `/metrics` | GET | Operational metrics + cache stats |
-| `/admin/users` | GET | List all registered users |
 
 Ingestion is asynchronous because cloning + chunking + embedding a real
 repository takes minutes, and load balancers cut idle connections at ~230s.
+Any authenticated user may ingest; every submitted URL passes an **SSRF guard**
+(private / loopback / link-local / cloud-metadata addresses are rejected) before
+the server makes any network call. Deleting a source stays admin-only.
+
+### Admin (requires `admin` role)
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/sources` | DELETE | Purge every chunk from a source |
+| `/metrics` | GET | Operational metrics + cache stats |
+| `/admin/users` | GET | List all registered users |
 
 ### Ops (public)
 
@@ -278,8 +286,9 @@ Stated plainly rather than discovered in production:
   cookie — with CSRF protection — is the stronger posture.
 - **The SSRF guard has a DNS-rebinding window.** The address is validated, then
   resolved again by `requests`/`git` when the fetch happens. Redirects are
-  refused for the same reason. `/ingest` is admin-only, so this is
-  defence-in-depth, not the only control.
+  refused for the same reason. `/ingest` is open to any authenticated `user`,
+  so this guard is now the primary control — pinning the resolved IP through
+  the fetch (closing the rebinding window) is the stronger posture.
 - **RAGAS judges Gemini with Gemini.** The judge defaults to a stronger model
   (`gemini-2.5-pro`) than the one answering (`gemini-2.5-flash`), which reduces
   self-preference bias but does not eliminate it. Read the scores as a
