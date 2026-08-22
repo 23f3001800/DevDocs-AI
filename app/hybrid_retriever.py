@@ -54,10 +54,17 @@ class HybridRetriever:
         visible to dense search (which queries Chroma live) but invisible to
         sparse search until the process restarted — so newly ingested exact
         identifiers, the very thing BM25 exists for, could not be found.
+
+        WHY is the Chroma read inside the lock too, not just build_index? Two
+        concurrent rebuilds (e.g. two /ingest jobs finishing close together)
+        could otherwise interleave: rebuild A reads a snapshot, rebuild B reads
+        a newer snapshot and builds first, then rebuild A's stale snapshot
+        overwrites it — silently reverting the index. Snapshot-then-build must
+        be one atomic unit.
         """
-        result = self.vs.all_documents()
-        documents = result.get("documents") or []
         with self._bm25_lock:
+            result = self.vs.all_documents()
+            documents = result.get("documents") or []
             self.bm25.build_index(
                 documents,
                 result.get("metadatas") or [],
@@ -92,7 +99,17 @@ class HybridRetriever:
         if not rrf_scores:
             return []
 
-        candidate_ids = sorted(rrf_scores, key=rrf_scores.get, reverse=True)[:initial_k]
+        # WHY not slice this to [:initial_k]? rrf_scores already only contains
+        # ids from the two initial_k-capped lists above, so the fused union is
+        # at most 2*initial_k — but truncating it *again* here by RRF score,
+        # before reranking, used to drop candidates that only one retriever
+        # found. A sparse-only exact match (an identifier, an error code) can
+        # rank #1 in BM25 and not appear in dense at all; its RRF score then
+        # comes from a single list and can land outside the top initial_k,
+        # even though the cross-encoder — which has not seen it yet — might
+        # judge it the single best match. Reranking the full union lets stage 3
+        # have the final say, which is the whole point of running it at all.
+        candidate_ids = sorted(rrf_scores, key=rrf_scores.get, reverse=True)
 
         # ── Stage 3: cross-encoder rerank ────────────────────
         # A bi-encoder must compress a document into a vector without knowing

@@ -42,7 +42,16 @@ class BM25Retriever:
         self.bm25 = BM25Okapi([_tokenise(doc) for doc in documents]) if documents else None
 
     def search(self, query: str, k: int = 10) -> list[dict]:
-        """Return up to k hits as {id, content, metadata, score}, best first."""
+        """Return up to k hits as {id, content, metadata, score}, best first.
+
+        WHY no `score > 0` filter? Classic BM25 IDF (used by rank_bm25) can go
+        negative for a term that appears in more than half the corpus — small
+        or narrow corpora hit this often. A document sharing several query
+        terms can then legitimately score at or below zero, and a hard ">0"
+        gate silently dropped it — exactly the kind of match BM25 exists to
+        find. Ranking is BM25's job here; deciding what's actually relevant
+        belongs to the downstream reranker, not a sign check on a raw score.
+        """
         if not self.bm25:
             return []
         scores = self.bm25.get_scores(_tokenise(query))
@@ -55,7 +64,5 @@ class BM25Retriever:
                 "metadata": self.metadatas[i],
                 "score": float(scores[i]),
             }
-            # Drop documents sharing zero query terms rather than padding with junk.
             for i in top_idx
-            if scores[i] > 0
         ]

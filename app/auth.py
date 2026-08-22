@@ -50,7 +50,12 @@ security = HTTPBearer(auto_error=False)
 # ── Request / Response schemas ───────────────────────────────
 class RegisterRequest(BaseModel):
     username: str = Field(..., min_length=3, max_length=50)
-    password: str = Field(..., min_length=6, max_length=128)
+    # WHY max_length=72, not 128? bcrypt silently truncates the input to its
+    # first 72 bytes — anything past that is ignored, not hashed. A 128-char
+    # password would give the user a false sense of entropy: characters 73-128
+    # never affect the hash, so two "different" passwords that share the same
+    # 72-byte prefix are, in fact, the same password.
+    password: str = Field(..., min_length=6, max_length=72)
 
 
 class LoginRequest(BaseModel):

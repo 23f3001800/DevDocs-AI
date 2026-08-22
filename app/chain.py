@@ -1,7 +1,10 @@
 import json
 import logging
+import math
 import os
 import time
+
+from starlette.concurrency import run_in_threadpool
 
 from app.config import get_settings
 from app.llm_providers import llm_manager
@@ -83,20 +86,33 @@ Rules:
 4. Reference relevant file paths inline when they help the reader."""
 
 
+def _relevance(rerank_score: float) -> float:
+    """Squash a raw CrossEncoder logit into a 0..1 "relevance" the model can
+    reason about.
+
+    WHY? ms-marco CrossEncoder.predict() returns an unbounded logit, not a
+    probability — it can be -8.3 or +6.1 depending on the pair. Printing that
+    raw number into the prompt as "relevance: -8.30" tells the LLM nothing
+    (it has no calibrated sense of the model's logit range) and skews the
+    confidence it reports back. A sigmoid maps it onto (0, 1), which reads the
+    same way a probability does.
+    """
+    return 1.0 / (1.0 + math.exp(-rerank_score))
+
+
 def _build_context(chunks: list[dict]) -> tuple[str, list[str]]:
     """Format retrieved chunks into a context block, and collect sources.
 
     file_path is included in-band because the model can only cite what it can
-    see; rerank_score is included so it can calibrate `confidence` — if every
+    see; relevance is included so it can calibrate `confidence` — if every
     chunk scored low, retrieval was weak and the answer should be hedged.
     """
     parts, sources = [], []
     for i, chunk in enumerate(chunks):
         fp = chunk["metadata"].get("file_path", "unknown")
         sources.append(fp)
-        parts.append(
-            f"[Chunk {i + 1} | {fp} | relevance: {chunk['rerank_score']:.2f}]\n{chunk['content']}"
-        )
+        relevance = _relevance(chunk["rerank_score"])
+        parts.append(f"[Chunk {i + 1} | {fp} | relevance: {relevance:.2f}]\n{chunk['content']}")
     return "\n\n---\n\n".join(parts), sources
 
 
@@ -113,7 +129,9 @@ def ask(question: str, k: int = 5) -> RAGResponse:
             has_answer=False,
         )
 
-    context, _ = _build_context(chunks)
+    context, sources = _build_context(chunks)
+    # dict.fromkeys dedupes while preserving retrieval order (set() would not).
+    real_sources = list(dict.fromkeys(sources))
     user_message = f"Context:\n{context}\n\nQuestion: {question}"
     max_tokens = get_settings().llm_max_tokens
 
@@ -136,8 +154,16 @@ def ask(question: str, k: int = 5) -> RAGResponse:
     # emit a trailing comma or a markdown fence. Feeding the parse error back to
     # the model fixes it most of the time; the final fallback guarantees the
     # endpoint never 500s on a formatting hiccup.
+    #
+    # WHY overwrite `sources` after parsing instead of trusting the LLM's own
+    # "sources" field? The model can hallucinate a file path that merely
+    # sounds plausible, or paraphrase one it saw in-context. The chunks we
+    # actually retrieved and fed it are the ground truth for what backs the
+    # answer, so `sources` is always rebuilt from them.
     try:
-        return RAGResponse(**json.loads(raw))
+        parsed = RAGResponse(**json.loads(raw))
+        parsed.sources = real_sources
+        return parsed
     except Exception as e:
         try:
             retry_msg = (
@@ -145,13 +171,15 @@ def ask(question: str, k: int = 5) -> RAGResponse:
                 f"Original output: {raw}\n"
                 f"Return ONLY valid JSON matching the schema."
             )
-            retry_result = llm_manager.generate(SYSTEM, retry_msg, max_tokens=512)
-            return RAGResponse(**json.loads(retry_result.text))
+            retry_result = llm_manager.generate(SYSTEM, retry_msg, max_tokens=max_tokens)
+            parsed = RAGResponse(**json.loads(retry_result.text))
+            parsed.sources = real_sources
+            return parsed
         except Exception:
             log.warning("JSON self-repair failed; returning raw text at low confidence")
             return RAGResponse(
                 answer=raw or "Unable to generate answer.",
-                sources=[c["metadata"].get("file_path", "") for c in chunks[:3]],
+                sources=real_sources[:3],
                 confidence=0.1,
                 has_answer=bool(raw),
             )
@@ -164,10 +192,11 @@ async def ask_stream(question: str, k: int = 5):
     Yields ("token", text) tuples followed by exactly one ("sources", [paths]).
     The transport (SSE framing) is the API layer's concern, not this function's.
     """
-    # Retrieval is CPU-bound (embedding + cross-encoder). It blocks the event
-    # loop for ~200-400ms; acceptable at low concurrency, and the first thing to
-    # move to a thread pool if p95 under load becomes a problem.
-    chunks = get_retriever().retrieve(question, k=k)
+    # Retrieval is CPU-bound (embedding + cross-encoder), ~200-400ms. Run it in
+    # a worker thread so it doesn't block the event loop — otherwise every
+    # other in-flight request (including other streams already sending tokens)
+    # stalls for the duration of this one query's retrieval.
+    chunks = await run_in_threadpool(lambda: get_retriever().retrieve(question, k=k))
 
     if not chunks:
         yield "token", "⚠️ No documents ingested yet. Run: python scripts/ingest.py --source <url>"

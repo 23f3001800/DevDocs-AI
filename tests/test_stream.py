@@ -5,6 +5,7 @@ This file used to be a manual script that called the live API. It is now real
 pytest coverage that runs offline against the MockProvider and fakes.
 """
 
+import itertools
 import json
 
 import pytest
@@ -15,11 +16,26 @@ from app.main import _sse, app
 
 client = TestClient(app)
 
+_ip_counter = itertools.count(1)
+
+
+def _fresh_ip_headers() -> dict:
+    """A distinct fake client IP per call — see tests/test_api.py for why:
+    AUTH_RATE_LIMIT is per-IP and tight, and TestClient makes every call look
+    like the same peer without this."""
+    n = next(_ip_counter)
+    return {"X-Forwarded-For": f"10.2.{(n >> 8) % 256}.{n % 256}"}
+
 
 def _auth_headers(username="streamuser", password="pass123456"):
-    r = client.post("/auth/register", json={"username": username, "password": password})
+    ip_headers = _fresh_ip_headers()
+    r = client.post(
+        "/auth/register", json={"username": username, "password": password}, headers=ip_headers
+    )
     if r.status_code == 409:
-        r = client.post("/auth/login", json={"username": username, "password": password})
+        r = client.post(
+            "/auth/login", json={"username": username, "password": password}, headers=ip_headers
+        )
     return {"Authorization": f"Bearer {r.json()['token']}"}
 
 

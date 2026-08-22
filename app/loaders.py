@@ -11,6 +11,7 @@ from bs4 import BeautifulSoup
 from langchain_core.documents import Document
 
 from app.config import get_settings
+from app.security import SSRFError, resolve_public_ips
 
 log = logging.getLogger(__name__)
 
@@ -20,8 +21,30 @@ DOC_EXTENSIONS = {".md", ".mdx", ".txt", ".rst"}
 SKIP_DIRS = {"node_modules", ".git", "__pycache__", "dist", "build", ".venv", "venv"}
 
 
+def _revalidate_before_fetch(url: str) -> None:
+    """Re-resolve DNS and re-check is-global right before the network hop.
+
+    WHY re-check here when app.main.validate_ingest_source already ran at
+    submission time? Ingest runs in a background job — the fetch can happen
+    seconds to minutes after submission. DNS is resolved again by
+    requests/git at that point, and an attacker controls their own DNS
+    records: point the hostname at a public IP for the first lookup (passing
+    submission-time validation), then rebind it to an internal address before
+    the background job actually fetches. Re-checking immediately before the
+    call that makes the request closes that window.
+    """
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        raise SSRFError(f"Refusing to fetch — disallowed scheme in {url!r}")
+    host = parsed.hostname
+    if not host:
+        raise SSRFError(f"Refusing to fetch — missing host in {url!r}")
+    resolve_public_ips(host)
+
+
 def load_github_repo(repo_url: str) -> list[Document]:
     """Clone a GitHub repo and load all code + doc files."""
+    _revalidate_before_fetch(repo_url)
     tmpdir = tempfile.mkdtemp()
     try:
         log.info("Cloning %s", repo_url)
@@ -71,6 +94,11 @@ def load_url(url: str) -> list[Document]:
     operator can pass the final URL directly.
     """
     settings = get_settings()
+    # Outside the try/except below on purpose: an SSRFError must fail the
+    # ingest job loudly (surfaced as job status "failed"), not be swallowed by
+    # the generic `except Exception: return []` that treats every other error
+    # here as "nothing to load".
+    _revalidate_before_fetch(url)
     try:
         r = requests.get(
             url,

@@ -86,7 +86,12 @@ def test_rrf_rewards_agreement_between_retrievers():
     # Dense ranks c first, then b. BM25 (query below) will rank b first.
     r = _build(DOCS, dense_hits=[DOCS[2], DOCS[1]], rerank_scores={})
     dense = r.vs.query("x", k=20)
-    sparse = r.bm25.search("BM25 term frequency inverse document", k=20)
+    # k=1: BM25Retriever.search() no longer hard-filters zero-score hits (see
+    # bm25_retriever.py), so a wide k over this 3-doc corpus would also return
+    # the two irrelevant docs at score 0.0 — noise this test isn't about.
+    # Asking for just the single best sparse match keeps it isolated to "b",
+    # the one genuine term match.
+    sparse = r.bm25.search("BM25 term frequency inverse document", k=1)
 
     scores = {}
     for hits in (dense, sparse):
@@ -145,7 +150,12 @@ def test_rebuild_bm25_picks_up_newly_ingested_documents():
     """The bug: the BM25 index was built once in __init__ and never refreshed,
     so anything added by /ingest was invisible to sparse search until restart."""
     r = _build(DOCS, dense_hits=[], rerank_scores={})
-    assert r.bm25.search("Kubernetes operator reconciliation", k=5) == []
+    # search() no longer hard-filters zero-score hits (see bm25_retriever.py),
+    # so this returns the 3 existing (irrelevant, score 0.0) docs rather than
+    # []. The regression this test guards against is specifically that "d"
+    # cannot be found before the index is rebuilt.
+    before = r.bm25.search("Kubernetes operator reconciliation", k=5)
+    assert all(hit["id"] != "d" for hit in before)
 
     # Simulate an ingest adding a new chunk to the store.
     r.vs.docs.append(

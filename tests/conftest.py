@@ -31,6 +31,14 @@ os.environ["JWT_SECRET"] = "test-only-secret-not-used-in-any-real-deployment"
 # suite can never make a paid API call.
 os.environ["GOOGLE_API_KEY"] = ""
 os.environ["LANGCHAIN_TRACING_V2"] = "false"
+# Every request from TestClient shares one socket peer ("testclient"), so
+# without this every test in the suite would fall into the SAME per-IP rate
+# limit bucket for /auth/*, /ask and /ingest — tripping AUTH_RATE_LIMIT
+# (intentionally tight, 10/minute) well before the suite finishes. Trusting
+# X-Forwarded-For here lets tests that care about isolation supply a distinct
+# fake client IP per call; tests that don't set the header keep behaving
+# exactly as before.
+os.environ["TRUST_PROXY_HEADERS"] = "true"
 
 
 @pytest.fixture(scope="session", autouse=True)
