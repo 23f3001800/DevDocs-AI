@@ -88,6 +88,7 @@ html, body {
 .screen {
     display: none;
     height: 100vh;
+    height: 100dvh;
     width: 100vw;
 }
 .screen.active {
@@ -319,6 +320,7 @@ html, body {
 .sidebar {
     width: var(--sidebar-width);
     height: 100vh;
+    height: 100dvh;
     display: flex;
     flex-direction: column;
     border-right: 1px solid var(--border);
@@ -435,6 +437,7 @@ html, body {
 .main-content {
     flex: 1;
     height: 100vh;
+    height: 100dvh;
     overflow: hidden;
     display: flex;
     flex-direction: column;
@@ -958,11 +961,46 @@ html, body {
     to { opacity: 1; }
 }
 
+/* ── Menu toggle (mobile hamburger) ─────────────────────── */
+.menu-toggle {
+    display: none;
+    position: fixed;
+    top: var(--space-md);
+    left: var(--space-md);
+    z-index: 101;
+    width: 40px;
+    height: 40px;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    background: var(--bg-elevated);
+    color: var(--text-primary);
+    cursor: pointer;
+}
+
+.sidebar-backdrop {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.5);
+    z-index: 99;
+}
+
+.sidebar-backdrop.open {
+    display: block;
+}
+
 /* ── Responsive ──────────────────────────────────────────── */
 @media (max-width: 768px) {
+    .menu-toggle {
+        display: flex;
+    }
+
     .sidebar {
         position: fixed;
-        left: -var(--sidebar-width);
+        top: 0;
+        left: calc(-1 * var(--sidebar-width));
         z-index: 100;
         transition: left 0.3s var(--ease-smooth);
     }

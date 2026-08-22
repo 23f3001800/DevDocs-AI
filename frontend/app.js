@@ -24,8 +24,16 @@ const authSubmit = $("#auth-submit");
 const messagesEl = $("#messages");
 const questionInput = $("#question-input");
 const sendBtn = $("#send-btn");
+const sidebar = $("#sidebar");
+const menuToggle = $("#menu-toggle");
+const sidebarBackdrop = $("#sidebar-backdrop");
 
 let authMode = "login"; // or "register"
+
+// The welcome-message markup, captured once at load so logout() can restore
+// #messages to its pristine state instead of leaking the previous user's
+// conversation into the next login on the same tab.
+const WELCOME_HTML = messagesEl.innerHTML;
 
 // ── Init ────────────────────────────────────────────────────
 document.addEventListener("DOMContentLoaded", async () => {
@@ -50,6 +58,10 @@ function setupEventListeners() {
             tab.classList.add("active");
             authSubmit.querySelector(".btn-text").textContent =
                 authMode === "login" ? "Sign In" : "Create Account";
+            // Chrome/Firefox use the autocomplete token to decide whether to
+            // offer to *save* a new password vs *fill* an existing one.
+            $("#password").autocomplete =
+                authMode === "login" ? "current-password" : "new-password";
             authError.classList.add("hidden");
         });
     });
@@ -72,10 +84,12 @@ function setupEventListeners() {
 
     sendBtn.addEventListener("click", sendMessage);
 
-    // Quick action buttons
+    // Quick action buttons (use closest() so a click on the icon/text inside
+    // the button — not just the button element itself — still registers)
     document.addEventListener("click", (e) => {
-        if (e.target.classList.contains("quick-btn")) {
-            questionInput.value = e.target.dataset.question;
+        const btn = e.target.closest(".quick-btn");
+        if (btn) {
+            questionInput.value = btn.dataset.question;
             sendBtn.disabled = false;
             sendMessage();
         }
@@ -83,7 +97,10 @@ function setupEventListeners() {
 
     // Nav items
     $$(".nav-item").forEach((item) => {
-        item.addEventListener("click", () => switchView(item.dataset.view));
+        item.addEventListener("click", () => {
+            switchView(item.dataset.view);
+            closeSidebar();
+        });
     });
 
     // Logout
@@ -94,6 +111,28 @@ function setupEventListeners() {
 
     // Refresh metrics
     $("#refresh-metrics").addEventListener("click", loadMetrics);
+
+    // Mobile sidebar (hamburger + backdrop + Escape)
+    menuToggle.addEventListener("click", () => {
+        if (sidebar.classList.contains("open")) closeSidebar();
+        else openSidebar();
+    });
+    sidebarBackdrop.addEventListener("click", closeSidebar);
+    document.addEventListener("keydown", (e) => {
+        if (e.key === "Escape" && sidebar.classList.contains("open")) closeSidebar();
+    });
+}
+
+function openSidebar() {
+    sidebar.classList.add("open");
+    sidebarBackdrop.classList.add("open");
+    menuToggle.setAttribute("aria-expanded", "true");
+}
+
+function closeSidebar() {
+    sidebar.classList.remove("open");
+    sidebarBackdrop.classList.remove("open");
+    menuToggle.setAttribute("aria-expanded", "false");
 }
 
 // ── Auth ────────────────────────────────────────────────────
@@ -157,11 +196,24 @@ async function logout(revoke = false) {
     }
     token = null;
     currentUser = null;
+    isStreaming = false; // abandon any in-flight assistant response
     localStorage.removeItem("dd_token");
     authScreen.classList.add("active");
     appScreen.classList.remove("active");
     authForm.reset();
     authError.classList.add("hidden");
+
+    // Reset app-screen state so the next user to sign in on this tab never
+    // sees the previous user's conversation or ingest status.
+    messagesEl.innerHTML = WELCOME_HTML;
+    const ingestStatus = $("#ingest-status");
+    ingestStatus.textContent = "";
+    ingestStatus.className = "status-message hidden";
+    questionInput.value = "";
+    sendBtn.disabled = true;
+    autoResize(questionInput);
+    closeSidebar();
+    switchView("chat");
 }
 
 // ── App Shell ───────────────────────────────────────────────
@@ -555,8 +607,9 @@ function renderMarkdown(text) {
 
     let html = escapeHtml(text); // ← must stay first; see note above
 
-    // Code blocks (```...```)
-    html = html.replace(/```(\w*)\n([\s\S]*?)```/g, (_, lang, code) => {
+    // Code blocks (```...```). The newline after the opening fence is
+    // optional — ```js foo()``` on one line is valid too.
+    html = html.replace(/```(\w*)\n?([\s\S]*?)```/g, (_, lang, code) => {
         return `<pre><code class="language-${lang}">${code.trim()}</code></pre>`;
     });
 
@@ -574,12 +627,19 @@ function renderMarkdown(text) {
     html = html.replace(/^## (.+)$/gm, "<h3>$1</h3>");
     html = html.replace(/^# (.+)$/gm, "<h2>$1</h2>");
 
-    // Unordered lists
-    html = html.replace(/^[*-] (.+)$/gm, "<li>$1</li>");
-    html = html.replace(/(<li>.*<\/li>\n?)+/g, "<ul>$&</ul>");
-
-    // Numbered lists
-    html = html.replace(/^\d+\. (.+)$/gm, "<li>$1</li>");
+    // Lists — tag each line as ordered/unordered <li> first, THEN wrap
+    // consecutive runs of the *same* type in one pass. Numbered lines must be
+    // converted to <li> before the wrap regex runs, otherwise (as before) the
+    // <ul> wrap already happened and numbered lists render as bare <li>s.
+    html = html.replace(/^[*-] (.+)$/gm, '<li data-list-type="ul">$1</li>');
+    html = html.replace(/^\d+\. (.+)$/gm, '<li data-list-type="ol">$1</li>');
+    html = html.replace(
+        /<li data-list-type="(ul|ol)">.*<\/li>(?:\n?<li data-list-type="\1">.*<\/li>)*\n?/g,
+        (match, type) => {
+            const items = match.replace(/ data-list-type="(?:ul|ol)"/g, "");
+            return `<${type}>${items}</${type}>`;
+        }
+    );
 
     // Line breaks → paragraphs
     html = html
