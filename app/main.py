@@ -289,14 +289,14 @@ def _run_ingest_job(job_id: str, source: str) -> None:
     "/ingest",
     tags=["ingest"],
     status_code=202,
-    summary="Queue ingestion of a GitHub repo, URL, or PDF (admin only)",
+    summary="Queue ingestion of a GitHub repo, URL, or PDF (user or admin)",
 )
 @limiter.limit(settings.ingest_rate_limit)
 async def ingest_endpoint(
     request: Request,
     body: IngestRequest,
     background: BackgroundTasks,
-    user: dict = Depends(require_role("admin")),
+    user: dict = Depends(require_role("user")),
 ):
     """Accepts the job and returns immediately.
 
@@ -323,8 +323,8 @@ async def ingest_endpoint(
     return {"job_id": job_id, "status": "queued", "source": body.source}
 
 
-@app.get("/ingest/{job_id}", tags=["ingest"], summary="Poll an ingest job (admin only)")
-async def ingest_status(job_id: str, user: dict = Depends(require_role("admin"))):
+@app.get("/ingest/{job_id}", tags=["ingest"], summary="Poll an ingest job (user or admin)")
+async def ingest_status(job_id: str, user: dict = Depends(require_role("user"))):
     job = _jobs.get(job_id)
     if not job:
         raise HTTPException(404, "Unknown job id (it may have been evicted)")
