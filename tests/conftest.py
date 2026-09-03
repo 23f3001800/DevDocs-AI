@@ -64,8 +64,8 @@ def tmp_env(monkeypatch):
 
 
 # ── Anonymous session headers ────────────────────────────────
-# No login: every caller is identified by a client-generated X-Session-Id
-# header. Shared helpers for the test modules that hit the API via TestClient.
+# No login: every caller gets a server-signed cookie. Shared helpers create
+# isolated signed cookies for test modules that hit the API via TestClient.
 _ip_counter = itertools.count(1)
 
 
@@ -81,7 +81,19 @@ def fresh_ip_headers() -> dict:
 
 
 def session_headers(session_id: str | None = None) -> dict:
-    """Headers for a request from a fresh (or given) anonymous session."""
+    """Headers carrying a server-signed cookie for an isolated test session."""
+    from app.main import _SESSION_COOKIE_NAME, make_session_token
+
     headers = fresh_ip_headers()
-    headers["X-Session-Id"] = session_id or new_session_id()
+    token = make_session_token(session_id or new_session_id())
+    headers["Cookie"] = f"{_SESSION_COOKIE_NAME}={token}"
     return headers
+
+def session_owner(headers: dict) -> str:
+    """Return the verified owner carried by a test helper's signed cookie."""
+    from app.main import session_id_from_token
+
+    token = headers["Cookie"].split("=", 1)[1]
+    owner = session_id_from_token(token)
+    assert owner is not None
+    return owner

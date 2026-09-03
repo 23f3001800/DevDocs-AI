@@ -1,11 +1,10 @@
 /**
  * DevDocs AI — Frontend Application
  *
- * Anonymous, session-based app: no sign-in wall. Every browser tab/profile
- * gets a private, persistent session id (localStorage `dd_session`) sent as
- * `X-Session-Id` on every backend request. Free daily questions are capped
- * server-side; users can optionally paste their own Gemini API key (BYOK,
- * localStorage `dd_api_key`) to bypass that limit.
+ * Anonymous, session-based app: no sign-in wall. The server issues a private,
+ * signed HttpOnly session cookie, so JavaScript never reads or sends an owner
+ * id. Free daily questions are capped server-side; users can optionally paste
+ * their own Gemini API key (BYOK, localStorage `dd_api_key`) to bypass that limit.
  *
  * Handles streaming chat with per-session conversation history, source
  * ingestion (repo / docs / PDF / topic search), source management, and
@@ -14,7 +13,6 @@
 
 // ── State ───────────────────────────────────────────────────
 const API = window.location.origin;
-let sessionId = null;
 let apiKey = null;
 let isStreaming = false;
 let currentAbortController = null;
@@ -44,7 +42,6 @@ const WELCOME_HTML = messagesEl.innerHTML;
 
 // ── Init ────────────────────────────────────────────────────
 document.addEventListener("DOMContentLoaded", () => {
-    sessionId = getOrCreateSessionId();
     apiKey = localStorage.getItem("dd_api_key") || null;
     updateKeyStatusBadge();
     setupEventListeners();
@@ -52,29 +49,9 @@ document.addEventListener("DOMContentLoaded", () => {
 });
 
 // ── Anonymous session identity ─────────────────────────────
-function generateUUID() {
-    if (window.crypto && typeof crypto.randomUUID === "function") return crypto.randomUUID();
-    // Fallback for contexts without crypto.randomUUID (e.g. non-HTTPS) —
-    // RFC4122-ish v4 UUID built from getRandomValues.
-    const bytes = crypto.getRandomValues(new Uint8Array(16));
-    bytes[6] = (bytes[6] & 0x0f) | 0x40;
-    bytes[8] = (bytes[8] & 0x3f) | 0x80;
-    const hex = Array.from(bytes, (b) => b.toString(16).padStart(2, "0"));
-    return `${hex.slice(0, 4).join("")}-${hex.slice(4, 6).join("")}-${hex.slice(6, 8).join("")}-${hex.slice(8, 10).join("")}-${hex.slice(10, 16).join("")}`;
-}
-
-function getOrCreateSessionId() {
-    let id = localStorage.getItem("dd_session");
-    if (!id) {
-        id = generateUUID();
-        localStorage.setItem("dd_session", id);
-    }
-    return id;
-}
-
-/** Headers sent on every backend fetch. */
+/** The server attaches an HttpOnly, signed session cookie automatically. */
 function sessionHeaders(extra = {}) {
-    return { "X-Session-Id": sessionId, ...extra };
+    return { ...extra };
 }
 
 // ── Event Listeners ─────────────────────────────────────────
@@ -600,10 +577,20 @@ function parseSSE(frame) {
 
 function renderSources(sources) {
     if (!sources || !sources.length) return "";
-    return `<div class="sources-panel">
-        <div class="sources-label">📄 Sources</div>
-        ${sources.map((s) => `<div class="source-item">${escapeHtml(s)}</div>`).join("")}
-    </div>`;
+    return `<details class="sources-panel" open>
+        <summary class="sources-label">Citations (${sources.length})</summary>
+        <div class="source-items">
+            ${sources.map(renderSourceCitation).join("")}
+        </div>
+    </details>`;
+}
+
+function renderSourceCitation(source) {
+    const safeText = escapeHtml(source);
+    if (/^https?:\/\/[^\s]+$/i.test(source)) {
+        return `<a class="source-item source-link" href="${safeText}" target="_blank" rel="noopener noreferrer">${safeText}</a>`;
+    }
+    return `<code class="source-item">${safeText}</code>`;
 }
 
 function appendMessage(role, content, sender) {
@@ -1154,6 +1141,8 @@ async function loadMetrics() {
         set("m-total-requests", data.total_requests ?? 0);
         set("m-ask-requests", data.ask_requests ?? 0);
         set("m-p95-latency", data.p95_latency_ms ?? 0);
+        set("m-p95-ttft", data.p95_ttft_ms ?? 0);
+        set("m-cited-answers", data.answers_with_citations ?? 0);
         set("m-avg-latency", data.avg_latency_ms ?? 0);
         set("m-cache-hit-rate", ((data.embedding_cache_hit_rate ?? 0) * 100).toFixed(1));
         set("m-cache-size", data.embedding_cache_size ?? 0);

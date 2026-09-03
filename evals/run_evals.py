@@ -48,10 +48,20 @@ def run_ragas(records: dict[str, list]) -> dict[str, float]:
         def is_finished(self, response):
             return True
 
+    from langchain_core.embeddings import Embeddings
+    from app.vectorstore import VectorStore
+
+    class PipelineEmbeddings(Embeddings):
+        def embed_documents(self, texts: list[str]) -> list[list[float]]:
+            return VectorStore()._embedder.encode(texts).tolist()
+        def embed_query(self, text: str) -> list[float]:
+            return VectorStore()._embedder.encode([text])[0].tolist()
+
     result = evaluate(
         Dataset.from_dict(records),
         metrics=[faithfulness, answer_relevancy],
         llm=PipelineJudge(),
+        embeddings=PipelineEmbeddings(),
     )
     return {
         "ragas_faithfulness": float(result["faithfulness"]),
@@ -72,8 +82,9 @@ def load_cases(path: Path) -> list[dict]:
     return cases
 
 
-def run(cases: list[dict], k: int, retrieval_only: bool, use_ragas: bool) -> dict[str, float | int]:
-    retriever = get_retriever()
+def run(cases: list[dict], k: int, retrieval_only: bool, use_ragas: bool, retriever=None) -> dict[str, float | int]:
+    if retriever is None:
+        retriever = get_retriever()
     retrieval = {name: [] for name in ("recall_at_k", "precision_at_k", "mrr", "hit_rate")}
     answer_scores = {name: [] for name in ("keyword_coverage", "citation_coverage")}
     latencies = []

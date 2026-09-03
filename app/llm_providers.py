@@ -70,6 +70,53 @@ class GeminiProvider:
                 yield chunk.text
 
 
+# ─── OpenRouter Provider ──────────────────────────────────────
+class OpenRouterProvider:
+    name = "openrouter"
+
+    def __init__(self, api_key: str | None = None):
+        import openai
+        settings = get_settings()
+        self.client = openai.OpenAI(
+            api_key=api_key or settings.openrouter_api_key,
+            base_url="https://openrouter.ai/api/v1",
+        )
+        self.async_client = openai.AsyncOpenAI(
+            api_key=api_key or settings.openrouter_api_key,
+            base_url="https://openrouter.ai/api/v1",
+        )
+        self.model = settings.openrouter_model
+
+    def generate(self, system: str, user_message: str, max_tokens: int = 1024) -> LLMResponse:
+        resp = self.client.chat.completions.create(
+            model=self.model,
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": user_message},
+            ],
+            max_tokens=max_tokens,
+        )
+        return LLMResponse(
+            text=resp.choices[0].message.content or "",
+            provider=self.name,
+            model=self.model,
+        )
+
+    async def stream(self, system: str, user_message: str, max_tokens: int = 1024):
+        stream = await self.async_client.chat.completions.create(
+            model=self.model,
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": user_message},
+            ],
+            max_tokens=max_tokens,
+            stream=True,
+        )
+        async for chunk in stream:
+            if chunk.choices and chunk.choices[0].delta.content:
+                yield chunk.choices[0].delta.content
+
+
 # ─── Mock Provider (no API key — CI / offline only) ───────────
 class MockProvider:
     name = "mock"
@@ -105,6 +152,13 @@ class LLMManager:
                 log.info("Gemini provider ready (%s)", settings.gemini_model)
             except Exception as e:
                 log.warning("Gemini provider failed to init: %s", e)
+
+        if settings.openrouter_api_key:
+            try:
+                self.providers.append(OpenRouterProvider())
+                log.info("OpenRouter provider ready (%s)", settings.openrouter_model)
+            except Exception as e:
+                log.warning("OpenRouter provider failed to init: %s", e)
 
         if self.providers:
             return

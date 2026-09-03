@@ -1,6 +1,8 @@
+import hmac
 import json
 import logging
 import pathlib
+import secrets
 import time
 import uuid
 from collections import OrderedDict, defaultdict, deque
@@ -48,6 +50,51 @@ settings = get_settings()
 # For a real deployment scrape a Prometheus endpoint and aggregate there.
 _metrics = defaultdict(int)
 _latencies: deque[float] = deque(maxlen=1000)  # bounded: an unbounded list leaks
+_ask_latencies: deque[float] = deque(maxlen=1000)
+_ttfts: deque[float] = deque(maxlen=1000)
+
+# Owners are server-issued, signed HttpOnly cookie values. A client cannot
+# impersonate another session by supplying a UUID in a request header.
+_SESSION_COOKIE_NAME = "devdocs_session"
+_SESSION_TOKEN_VERSION = "v1"
+_EPHEMERAL_SESSION_SECRET = secrets.token_bytes(32)
+
+
+def _session_secret() -> bytes:
+    configured = settings.session_secret.strip()
+    return configured.encode("utf-8") if configured else _EPHEMERAL_SESSION_SECRET
+
+
+def make_session_token(session_id: str | None = None, issued_at: int | None = None) -> str:
+    """Create a tamper-evident anonymous-session token for a cookie."""
+    owner = str(uuid.UUID(session_id)) if session_id else str(uuid.uuid4())
+    timestamp = int(time.time()) if issued_at is None else int(issued_at)
+    payload = f"{_SESSION_TOKEN_VERSION}.{owner}.{timestamp}"
+    signature = hmac.new(_session_secret(), payload.encode("utf-8"), "sha256").hexdigest()
+    return f"{payload}.{signature}"
+
+
+def session_id_from_token(token: str | None) -> str | None:
+    """Return the cookie owner only when its signature and expiry are valid."""
+    if not token:
+        return None
+    parts = token.split(".")
+    if len(parts) != 4:
+        return None
+    version, owner, raw_timestamp, signature = parts
+    if version != _SESSION_TOKEN_VERSION:
+        return None
+    try:
+        canonical_owner = str(uuid.UUID(owner))
+        issued_at = int(raw_timestamp)
+    except (ValueError, TypeError):
+        return None
+    now = int(time.time())
+    if issued_at > now + 60 or now - issued_at > settings.session_max_age_seconds:
+        return None
+    payload = f"{version}.{canonical_owner}.{issued_at}"
+    expected = hmac.new(_session_secret(), payload.encode("utf-8"), "sha256").hexdigest()
+    return canonical_owner if hmac.compare_digest(signature, expected) else None
 
 
 @asynccontextmanager
@@ -104,6 +151,12 @@ app.add_middleware(
 async def log_and_track(request: Request, call_next):
     rid = str(uuid.uuid4())[:8]
     start = time.time()
+    session_id = session_id_from_token(request.cookies.get(_SESSION_COOKIE_NAME))
+    new_session_token = None
+    if session_id is None:
+        session_id = str(uuid.uuid4())
+        new_session_token = make_session_token(session_id)
+    request.state.session_id = session_id
     response = await call_next(request)
     ms = (time.time() - start) * 1000
     _metrics["total_requests"] += 1
@@ -113,6 +166,18 @@ async def log_and_track(request: Request, call_next):
     # Correlation ID: a user can quote this and you can find the exact request
     # across every log line.
     response.headers["X-Request-Id"] = rid
+    if new_session_token:
+        response.set_cookie(
+            key=_SESSION_COOKIE_NAME,
+            value=new_session_token,
+            max_age=settings.session_max_age_seconds,
+            httponly=True,
+            secure=settings.session_cookie_secure or settings.is_production,
+            samesite="lax",
+            path="/",
+        )
+    vary = response.headers.get("Vary")
+    response.headers["Vary"] = f"{vary}, Cookie" if vary else "Cookie"
     return response
 
 
@@ -189,21 +254,17 @@ def _sse(event: str, data: dict) -> str:
 
 
 # ── Anonymous session identity ───────────────────────────────
-# No login: X-Session-Id (client-generated UUID) IS the owner everywhere —
-# ingested chunks, chat history, everything. No admin/cross-session bypass.
-_SESSION_ID_HEADER = "X-Session-Id"
+# The middleware verifies a signed, HttpOnly cookie before choosing the owner.
+# Client-supplied X-Session-Id values are ignored and cannot authorize access.
 _API_KEY_HEADER = "X-Api-Key"
 
 
 def get_session_id(request: Request) -> str:
-    """Require and validate the caller's session id (a UUID)."""
-    raw = request.headers.get(_SESSION_ID_HEADER, "").strip()
-    if not raw:
-        raise HTTPException(400, f"Missing required '{_SESSION_ID_HEADER}' header")
-    try:
-        return str(uuid.UUID(raw))  # canonicalise casing
-    except ValueError:
-        raise HTTPException(400, f"'{_SESSION_ID_HEADER}' must be a valid UUID")
+    """Read the verified owner that the session middleware attached."""
+    session_id = getattr(request.state, "session_id", None)
+    if not isinstance(session_id, str):
+        raise HTTPException(401, "A valid session cookie is required")
+    return session_id
 
 
 def get_api_key(request: Request) -> str | None:
@@ -228,6 +289,7 @@ async def ask(
     api_key: str | None = Depends(get_api_key),
 ):
     _metrics["ask_requests"] += 1
+    ask_started = time.perf_counter()
     owner_filter = session_id  # retrieval is per-session private
 
     # Free daily limit only applies to the server's own key; checked before
@@ -281,6 +343,8 @@ async def ask(
         collected: list[str] = []
         collected_sources: list[str] = []
         failed = False
+        emitted_first_token = False
+        counted_citation = False
         try:
             if is_new_conversation:
                 # Emitted first so the client can track this conversation
@@ -290,10 +354,16 @@ async def ask(
                 body.question, k=body.k, owner=owner_filter, api_key=api_key
             ):
                 if kind == "token":
+                    if not emitted_first_token:
+                        emitted_first_token = True
+                        _ttfts.append((time.perf_counter() - ask_started) * 1000)
                     collected.append(payload)
                     yield _sse("token", {"text": payload})
                 elif kind == "sources":
                     collected_sources = payload
+                    if payload and not counted_citation:
+                        _metrics["answers_with_citations"] += 1
+                        counted_citation = True
                     yield _sse("sources", {"sources": payload})
         except Exception as e:
             # 200 is already committed once streaming starts — errors go
@@ -323,6 +393,7 @@ async def ask(
                     },
                 )
         finally:
+            _ask_latencies.append((time.perf_counter() - ask_started) * 1000)
             # Persist only on success — question was already saved above.
             if not failed and collected:
                 answer_text = "".join(collected)
@@ -646,14 +717,21 @@ async def delete_conversation_endpoint(
 # ── Operational metrics (public — no accounts left to gate it) ──
 @app.get("/metrics", tags=["ops"], summary="Operational metrics")
 async def metrics():
-    lats = sorted(_latencies)
+    lats = sorted(_ask_latencies or _latencies)
+    ttfts = sorted(_ttfts)
     # p95, not the mean: averages hide tail latency, and the tail is what users
     # actually complain about.
     p95 = lats[min(int(len(lats) * 0.95), len(lats) - 1)] if lats else 0
+    p95_ttft = ttfts[min(int(len(ttfts) * 0.95), len(ttfts) - 1)] if ttfts else 0
     return {
         **dict(_metrics),
         "p95_latency_ms": round(p95, 1),
         "avg_latency_ms": round(sum(lats) / len(lats), 1) if lats else 0,
+        "p95_ttft_ms": round(p95_ttft, 1),
+        "avg_ttft_ms": round(sum(ttfts) / len(ttfts), 1) if ttfts else 0,
+        "latency_samples": len(lats),
+        "ttft_samples": len(ttfts),
+        "latency_scope": "end_to_end_answer_stream" if _ask_latencies else "request_setup",
         **get_cache_stats(),
         **get_llm_stats(),
     }
