@@ -62,7 +62,47 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Run tests
-        run: pytest tests/ -v --tb=short
+        run: |
+          export PYTHONPATH=.
+          pytest tests/ -v --tb=short
+
+  # ──────────────────────────────────────────────
+  # 2.5. Eval — retrieval and RAGAS metrics
+  # ──────────────────────────────────────────────
+  eval:
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    env:
+      APP_ENV: development
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Cache HuggingFace models
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: hf-${{ runner.os }}-minilm-msmarco-v1
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Ingest Test Data
+        run: |
+          export PYTHONPATH=.
+          python scripts/ingest.py --source data/devdocs_ragas_eval_test_cases.pdf
+
+      - name: Run evals
+        run: |
+          export PYTHONPATH=.
+          python evals/run_evals.py
 
   # ──────────────────────────────────────────────
   # 3. Docker — build (and push on main) to GHCR

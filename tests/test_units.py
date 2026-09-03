@@ -13,6 +13,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from fastapi import HTTPException
@@ -49,6 +50,12 @@ def test_config_refuses_production_without_a_google_api_key():
     result = _import_config_with_env(APP_ENV="production", GOOGLE_API_KEY="")
     assert result.returncode != 0
     assert "GOOGLE_API_KEY" in result.stderr
+
+
+def test_config_refuses_production_without_a_session_secret():
+    result = _import_config_with_env(APP_ENV="production", GOOGLE_API_KEY="test-key", SESSION_SECRET="")
+    assert result.returncode != 0
+    assert "SESSION_SECRET" in result.stderr
 
 
 def test_config_allows_development_without_a_google_api_key():
@@ -305,31 +312,33 @@ def test_validate_ingest_source_allows_public_and_local():
 class _FakeRequest:
     """Minimal stand-in exposing just what get_session_id reads."""
 
-    def __init__(self, headers: dict):
-        self.headers = headers
+    def __init__(self, session_id: str | None = None):
+        self.state = SimpleNamespace(session_id=session_id)
 
 
-def test_get_session_id_requires_the_header():
+def test_get_session_id_requires_verified_middleware_state():
     from app.main import get_session_id
 
     with pytest.raises(HTTPException) as exc:
-        get_session_id(_FakeRequest({}))
-    assert exc.value.status_code == 400
+        get_session_id(_FakeRequest())
+    assert exc.value.status_code == 401
 
 
-def test_get_session_id_rejects_a_non_uuid_value():
+def test_get_session_id_reads_only_the_verified_owner():
     from app.main import get_session_id
 
-    with pytest.raises(HTTPException) as exc:
-        get_session_id(_FakeRequest({"X-Session-Id": "not-a-uuid"}))
-    assert exc.value.status_code == 400
+    raw = "550e8400-e29b-41d4-a716-446655440000"
+    assert get_session_id(_FakeRequest(raw)) == raw
 
 
-def test_get_session_id_canonicalises_case():
-    from app.main import get_session_id
+def test_session_token_round_trip_and_tamper_rejection():
+    from app.main import make_session_token, session_id_from_token
 
-    raw = "550E8400-E29B-41D4-A716-446655440000"
-    assert get_session_id(_FakeRequest({"X-Session-Id": raw})) == raw.lower()
+    raw = "550e8400-e29b-41d4-a716-446655440000"
+    token = make_session_token(raw)
+    assert session_id_from_token(token) == raw
+    tampered = token[:-1] + ("0" if token[-1] != "0" else "1")
+    assert session_id_from_token(tampered) is None
 
 
 # ─────────────────────────────────────────────────────────────

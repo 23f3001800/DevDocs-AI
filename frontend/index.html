@@ -233,48 +233,64 @@
                         <h2>System Metrics</h2>
                         <p>Real-time operational metrics and performance data.</p>
                     </div>
-                    <div class="metrics-grid" id="metrics-grid">
+                    <div class="metrics-grid metrics-snapshot" id="metrics-grid" aria-label="Quality and performance snapshot">
                         <div class="metric-card glass">
-                            <div class="metric-label">Total Requests</div>
-                            <div class="metric-value" id="m-total-requests">—</div>
-                        </div>
-                        <div class="metric-card glass">
-                            <div class="metric-label">Ask Requests</div>
-                            <div class="metric-value" id="m-ask-requests">—</div>
-                        </div>
-                        <div class="metric-card glass">
-                            <div class="metric-label">P95 Latency</div>
+                            <div class="metric-label">P95 answer latency</div>
                             <div class="metric-value" id="m-p95-latency">—</div>
-                            <div class="metric-unit">ms</div>
+                            <div class="metric-unit">ms, end to end</div>
                         </div>
                         <div class="metric-card glass">
-                            <div class="metric-label">Avg Latency</div>
-                            <div class="metric-value" id="m-avg-latency">—</div>
-                            <div class="metric-unit">ms</div>
+                            <div class="metric-label">P95 first token</div>
+                            <div class="metric-value" id="m-p95-ttft">—</div>
+                            <div class="metric-unit">ms to first answer token</div>
                         </div>
                         <div class="metric-card glass accent">
-                            <div class="metric-label">Cache Hit Rate</div>
-                            <div class="metric-value" id="m-cache-hit-rate">—</div>
-                            <div class="metric-unit">%</div>
-                        </div>
-                        <div class="metric-card glass">
-                            <div class="metric-label">Cache Size</div>
-                            <div class="metric-value" id="m-cache-size">—</div>
-                        </div>
-                        <div class="metric-card glass">
-                            <div class="metric-label">LLM Calls</div>
-                            <div class="metric-value" id="m-llm-calls">—</div>
-                        </div>
-                        <div class="metric-card glass">
-                            <div class="metric-label">LLM Avg Latency</div>
-                            <div class="metric-value" id="m-llm-avg">—</div>
-                            <div class="metric-unit">ms</div>
-                        </div>
-                        <div class="metric-card glass">
-                            <div class="metric-label">Errors</div>
-                            <div class="metric-value error" id="m-errors">—</div>
+                            <div class="metric-label">Answers with citations</div>
+                            <div class="metric-value" id="m-cited-answers">—</div>
+                            <div class="metric-unit">source-backed answer events</div>
                         </div>
                     </div>
+                    <p class="metrics-explainer">Every answer exposes its cited documents below the response. These three numbers are a quick health check; inspect the full operational detail when diagnosing a change.</p>
+                    <details class="metrics-details">
+                        <summary>Show full operational metrics</summary>
+                        <div class="metrics-grid metrics-full">
+                            <div class="metric-card glass">
+                                <div class="metric-label">Total Requests</div>
+                                <div class="metric-value" id="m-total-requests">—</div>
+                            </div>
+                            <div class="metric-card glass">
+                                <div class="metric-label">Ask Requests</div>
+                                <div class="metric-value" id="m-ask-requests">—</div>
+                            </div>
+                            <div class="metric-card glass">
+                                <div class="metric-label">Average answer latency</div>
+                                <div class="metric-value" id="m-avg-latency">—</div>
+                                <div class="metric-unit">ms</div>
+                            </div>
+                            <div class="metric-card glass">
+                                <div class="metric-label">Cache Hit Rate</div>
+                                <div class="metric-value" id="m-cache-hit-rate">—</div>
+                                <div class="metric-unit">%</div>
+                            </div>
+                            <div class="metric-card glass">
+                                <div class="metric-label">Cache Size</div>
+                                <div class="metric-value" id="m-cache-size">—</div>
+                            </div>
+                            <div class="metric-card glass">
+                                <div class="metric-label">LLM Calls</div>
+                                <div class="metric-value" id="m-llm-calls">—</div>
+                            </div>
+                            <div class="metric-card glass">
+                                <div class="metric-label">LLM Avg Latency</div>
+                                <div class="metric-value" id="m-llm-avg">—</div>
+                                <div class="metric-unit">ms</div>
+                            </div>
+                            <div class="metric-card glass">
+                                <div class="metric-label">Errors</div>
+                                <div class="metric-value error" id="m-errors">—</div>
+                            </div>
+                        </div>
+                    </details>
                     <button id="refresh-metrics" class="btn-secondary">Refresh Metrics</button>
                 </div>
             </div>

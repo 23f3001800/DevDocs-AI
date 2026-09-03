@@ -5,9 +5,9 @@ SQLite store for anonymous per-session state.
 mounts ./data as a volume locally, but an ephemeral PaaS filesystem wipes it
 on every redeploy. Mount persistent storage, or move to Postgres.
 
-There is no login. Every caller identifies itself with a client-generated
-`X-Session-Id` header (see app.main.get_session_id), stored as `owner` on
-every table below — each session gets a private KB and private chat history.
+There is no login. The server issues an opaque, signed HttpOnly session cookie
+(see app.main.get_session_id), stored as `owner` on every table below — each
+session gets a private KB and private chat history.
 """
 
 import json

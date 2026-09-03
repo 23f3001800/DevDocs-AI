@@ -32,7 +32,9 @@ class Settings(BaseSettings):
 
     # ── LLM (Gemini is the only provider) ────────────────────
     google_api_key: str = ""
-    gemini_model: str = "gemini-2.5-flash"
+    gemini_model: str = "gemini-3.6-flash"
+    openrouter_api_key: str = ""
+    openrouter_model: str = "openai/gpt-4o-mini"
     llm_max_tokens: int = Field(1024, ge=64, le=32768)
 
     # ── Embeddings + vector store ────────────────────────────
@@ -56,9 +58,15 @@ class Settings(BaseSettings):
     # ── Uploads ──────────────────────────────────────────────
     upload_dir: str = "./data/uploads"
 
-    # Free questions per calendar day (UTC) per X-Session-Id, absent an
-    # X-Api-Key — see the `usage` table.
+    # Free questions per calendar day (UTC) per signed session cookie, absent
+    # an X-Api-Key — see the `usage` table.
     free_daily_limit: int = Field(5, ge=0)
+    # HMAC signing key for the anonymous session cookie. Development may use a
+    # process-local fallback so a checkout works out of the box; production
+    # must set a durable secret or every session would be invalidated on restart.
+    session_secret: str = ""
+    session_max_age_seconds: int = Field(60 * 60 * 24 * 30, ge=300, le=60 * 60 * 24 * 365)
+    session_cookie_secure: bool = False
 
     # ── HTTP ─────────────────────────────────────────────────
     allowed_origins: str = "*"
@@ -96,6 +104,10 @@ class Settings(BaseSettings):
             problems.append(
                 "GOOGLE_API_KEY must be set in production. Without it the app would "
                 "silently serve mock answers."
+            )
+        if len(self.session_secret) < 32:
+            problems.append(
+                "SESSION_SECRET must be at least 32 characters in production to sign session cookies."
             )
         if problems:
             raise ValueError(

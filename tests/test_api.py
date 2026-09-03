@@ -4,7 +4,7 @@ from fastapi.testclient import TestClient
 
 from app.config import get_settings
 from app.main import app
-from tests.conftest import fresh_ip_headers, new_session_id, session_headers
+from tests.conftest import fresh_ip_headers, new_session_id, session_headers, session_owner
 
 # WHY TestClient instead of a real running server?
 # TestClient runs the app in-process — no network overhead,
@@ -29,37 +29,33 @@ def test_health():
 
 
 # ── Anonymous session identity ───────────────────────────────
-def test_ask_requires_session_header():
-    # No X-Session-Id header → must get 400, never 200
-    r = client.post("/ask", json={"question": "hello world"}, headers=fresh_ip_headers())
-    assert r.status_code == 400
+def test_server_issues_an_httponly_session_cookie():
+    isolated_client = TestClient(app)
+    r = isolated_client.get("/usage", headers=fresh_ip_headers())
+    assert r.status_code == 200
+    cookie = r.headers["set-cookie"]
+    assert "devdocs_session=" in cookie
+    assert "HttpOnly" in cookie
+    assert "SameSite=lax" in cookie
 
 
-def test_ask_rejects_a_blatantly_invalid_session_header():
-    headers = {**fresh_ip_headers(), "X-Session-Id": "not-a-uuid"}
-    r = client.post("/ask", json={"question": "hello world"}, headers=headers)
-    assert r.status_code == 400
+def test_spoofed_session_header_cannot_override_a_signed_cookie():
+    from app.main import _SESSION_COOKIE_NAME, make_session_token
 
-
-def test_conversations_require_session_header():
-    assert client.get("/conversations", headers=fresh_ip_headers()).status_code == 400
-    assert client.post("/conversations", json={}, headers=fresh_ip_headers()).status_code == 400
-
-
-def test_ingest_requires_session_header():
-    r = client.post(
-        "/ingest", json={"source": "https://example.com"}, headers=fresh_ip_headers()
+    victim_owner = new_session_id()
+    attacker_owner = new_session_id()
+    victim_client = TestClient(app)
+    attacker_client = TestClient(app)
+    victim_client.cookies.set(_SESSION_COOKIE_NAME, make_session_token(victim_owner))
+    attacker_client.cookies.set(_SESSION_COOKIE_NAME, make_session_token(attacker_owner))
+    attacker_headers = {**fresh_ip_headers(), "X-Session-Id": victim_owner}
+    response = attacker_client.post(
+        "/ask", json={"question": "What is this project about?"}, headers=attacker_headers
     )
-    assert r.status_code == 400
-
-
-def test_ingest_upload_requires_session_header():
-    r = client.post(
-        "/ingest/upload",
-        files={"file": ("doc.pdf", _MINI_PDF, "application/pdf")},
-        headers=fresh_ip_headers(),
-    )
-    assert r.status_code == 400
+    assert response.status_code == 200
+    conv_id = json.loads(response.text.split("event: meta\ndata: ", 1)[1].split("\n\n", 1)[0])["conversation_id"]
+    assert attacker_client.get(f"/conversations/{conv_id}", headers=fresh_ip_headers()).status_code == 200
+    assert victim_client.get(f"/conversations/{conv_id}", headers=fresh_ip_headers()).status_code == 404
 
 
 # ── Ask endpoint ───────────────────────────────────────────────
@@ -188,8 +184,8 @@ def test_usage_endpoint_reports_used_limit_remaining():
     assert r2.json() == {"used": 1, "limit": limit, "remaining": limit - 1}
 
 
-def test_usage_requires_session_header():
-    assert client.get("/usage", headers=fresh_ip_headers()).status_code == 400
+def test_usage_issues_a_session_when_no_cookie_is_present():
+    assert client.get("/usage", headers=fresh_ip_headers()).status_code == 200
 
 
 # ── Ingest ────────────────────────────────────────────────────
@@ -228,7 +224,7 @@ def test_ingest_status_blocks_non_owner():
     m._jobs[job_id] = {
         "job_id": job_id,
         "status": "queued",
-        "submitted_by": owner_headers["X-Session-Id"],
+        "submitted_by": session_owner(owner_headers),
     }
     try:
         assert client.get(f"/ingest/{job_id}", headers=owner_headers).status_code == 200
@@ -249,7 +245,7 @@ def test_delete_source_allowed_for_owner():
     from app.database import list_sources_for_user, record_source
 
     headers = session_headers()
-    session_id = headers["X-Session-Id"]
+    session_id = session_owner(headers)
     record_source(session_id, "https://owned-by-session.example/doc", "url", 3, "")
 
     r = client.request(
@@ -274,7 +270,7 @@ def test_sources_mine_lists_only_own_sources():
     from app.database import record_source
 
     headers = session_headers()
-    session_id = headers["X-Session-Id"]
+    session_id = session_owner(headers)
     other_session_id = new_session_id()
     record_source(session_id, "https://mine.example/doc", "url", 5, "")
     record_source(other_session_id, "https://other.example/doc", "url", 2, "")
@@ -348,7 +344,7 @@ def test_conversations_crud_and_cross_session_isolation():
 
 
 def test_ask_history_is_isolated_between_sessions():
-    """Two different X-Session-Id values must never see each other's history."""
+    """Two different signed session cookies must never see each other's history."""
     import re
 
     headers_a = session_headers()

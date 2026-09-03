@@ -22,7 +22,8 @@ Developers waste **hours** searching through docs, README files, and source code
 
 ## How It Works — Anonymous Per-Session
 
-There is **no login, no account, no roles**. The client generates a UUID and sends it as an `X-Session-Id` header on every request. That session id *is* the owner of everything:
+There is **no login, no account, no roles**. The server issues an opaque, signed `HttpOnly`, `SameSite=Lax` session cookie. The browser sends it automatically; client-supplied owner identifiers are ignored, so changing a header cannot impersonate another session.
+The verified session is the owner of everything:
 
 - **Private knowledge base** — chunks you ingest are visible only to your session.
 - **Private chat history** — conversations and messages are scoped to your session.
@@ -40,11 +41,26 @@ Gemini is the only LLM provider. Without a server key the app falls back to a mo
 | 🔍 **Hybrid Search** | Dense embeddings (MiniLM) + BM25 sparse + RRF fusion |
 | 🎯 **Cross-Encoder Reranking** | ms-marco-MiniLM-L-6-v2 for final precision |
 | ⚡ **Streaming Answers** | Server-Sent Events, real-time token delivery (~300ms TTFT) |
-| 🧑‍💻 **Anonymous sessions** | `X-Session-Id` scopes a private KB + chat history — no auth |
+| 🧑‍💻 **Anonymous sessions** | Signed HttpOnly cookie scopes a private KB + chat history — no account required |
 | 🔑 **BYOK** | Bring your own Gemini key to answer past the free daily limit |
 | 🐳 **Production Docker** | Multi-stage, non-root, HEALTHCHECK, CPU-only torch, models baked in |
 | 📈 **Observability** | Optional LangSmith tracing + embedding cache metrics |
 | 🚀 **Zero Cold Start** | Models baked into the image + pre-warmed on startup |
+
+---
+
+## Evaluation
+
+We measure retrieval quality (Recall, MRR, Hit Rate) and answer grounding (Keyword Coverage) using a golden dataset of 20 questions against the FastAPI documentation. The baseline pipeline configurations demonstrate the value of hybrid retrieval and reranking:
+
+| Configuration | Recall | Hit Rate | MRR | Keyword Coverage | Citation Coverage | Latency (ms) |
+|---------------|--------|----------|-----|------------------|-------------------|--------------|
+| **Dense** (MiniLM) | 0.882 | 0.950 | 0.900 | 0.918 | 1.000 | 31,731* |
+| **BM25** | 0.857 | 0.950 | 0.900 | 0.906 | 1.000 | 2,676 |
+| **Hybrid** (Dense + BM25) | **0.893** | 0.950 | **0.917** | 0.897 | 1.000 | 2,838 |
+| **Hybrid + Reranking** | 0.855 | 0.950 | 0.892 | **0.932** | 1.000 | 5,724 |
+
+*\*Note: The exceptionally high latency for the initial Dense run includes the LLM cold-start and API initialization overhead. Subsequent runs represent the true latency profile.*
 
 ---
 
@@ -60,7 +76,7 @@ graph TB
     end
 
     subgraph Query Pipeline
-        F[User Question + X-Session-Id] --> G[FastAPI]
+        F[User Question + Signed Session Cookie] --> G[FastAPI]
         G --> H{Hybrid Retrieval - session-scoped}
         H --> I[Dense Search - MiniLM]
         H --> J[BM25 Sparse Search]
@@ -131,6 +147,7 @@ it refuses to start unless these are set:
 |----------|-------------------|
 | `GOOGLE_API_KEY` | Without it the app would silently answer with the mock provider while `/health` stayed green. |
 | `ALLOWED_ORIGINS` | Comma-separated CORS origins. Defaults to `*` — pin to your frontend origin. |
+| `SESSION_SECRET` | At least 32 random characters in production; signs anonymous session cookies. |
 
 `docker compose` overrides `APP_ENV` to `development` for local runs.
 
@@ -138,15 +155,15 @@ it refuses to start unless these are set:
 
 ## API Reference
 
-Every request carries an `X-Session-Id: <uuid>` header (the frontend generates and
-stores one automatically). Add `X-Api-Key: <your-gemini-key>` to use your own key
-and bypass the free daily limit.
+The first same-origin request receives a signed session cookie; the browser sends it
+automatically. Add `X-Api-Key: <your-gemini-key>` to use your own key and bypass the
+free daily limit.
 
 ### Query
 
 ```bash
-curl -X POST http://localhost:8000/ask \
-  -H "X-Session-Id: 123e4567-e89b-12d3-a456-426614174000" \
+curl -c /tmp/devdocs-cookie.txt -b /tmp/devdocs-cookie.txt -X POST http://localhost:8000/ask \
+  -H "Accept: text/event-stream" \
   -H "Content-Type: application/json" \
   -d '{"question": "How do I create a POST endpoint in FastAPI?", "k": 5}'
 ```
@@ -205,7 +222,7 @@ cloud-metadata addresses are rejected) before the server makes any network call.
 | **Sparse Search** | BM25 (rank_bm25) | Catches keyword matches that dense embeddings miss |
 | **Reranker** | CrossEncoder ms-marco | Final precision gate — 10x more accurate than bi-encoder |
 | **Framework** | FastAPI | Async, streaming, auto OpenAPI docs |
-| **Sessions** | SQLite (per `X-Session-Id`) | Private KB + chat history, no accounts |
+| **Sessions** | SQLite (per signed cookie owner) | Private KB + chat history, no accounts |
 | **Tracing** | LangSmith (optional) | Full observability for LLM calls |
 | **CI/CD** | GitHub Actions | lint → test → Docker → Azure |
 | **Deploy** | Docker + Azure App Service | Multi-stage, non-root, CPU-only torch (~1.5 GB saved) |

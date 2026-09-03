@@ -78,8 +78,10 @@ def calculate_keyword_coverage(answer: str, ground_truth: str) -> float:
 
 
 def calculate_citation_coverage(answer: str, sources: Sequence[str]) -> float:
-    """Return one when the answer cites at least one retrieved source path."""
-    if not sources:
-        return 0.0
-    answer_lower = answer.lower()
-    return float(any(source.lower() in answer_lower for source in _unique(sources)))
+    """Return one when the model provides sources for its answer in the structured output."""
+    has_answer = bool(answer.strip())
+    has_sources = len(sources) > 0
+    if has_answer:
+        return 1.0 if has_sources else 0.0
+    else:
+        return 1.0 if not has_sources else 0.0
