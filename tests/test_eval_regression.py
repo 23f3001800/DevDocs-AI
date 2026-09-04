@@ -1,5 +1,5 @@
-import pytest
-from evals.metrics import calculate_recall_at_k, calculate_mrr
+from evals.metrics import calculate_mrr, calculate_recall_at_k
+
 
 def test_retrieval_quality_thresholds():
     # Example test with mock responses to prevent regression in CI
