@@ -79,6 +79,11 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Verify evaluation fixtures
+        run: |
+          test -f data/devdocs_ragas_eval_test_cases.pdf
+          test -f data/eval_dataset.json
+
       - name: Setup Python 3.12
         uses: actions/setup-python@v5
         with:
@@ -94,7 +99,7 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Ingest Test Data
+      - name: Ingest evaluation PDF fixture
         run: |
           export PYTHONPATH=.
           python scripts/ingest.py --source data/devdocs_ragas_eval_test_cases.pdf

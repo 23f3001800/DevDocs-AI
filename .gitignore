@@ -11,7 +11,11 @@ chroma_db/
 chroma_db/chroma_db/
 
 # Data
-data/
+# Keep local databases and ad-hoc data out of Git, while versioning the small
+# deterministic fixtures that make the evaluation job reproducible in CI.
+data/*
+!data/devdocs_ragas_eval_test_cases.pdf
+!data/eval_dataset.json
 
 # Coverage
 .coverage
