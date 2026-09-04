@@ -11,8 +11,8 @@
 # Gemini is the only provider — no anthropic/openai client is installed or
 # imported anywhere in app code, except openai for OpenRouter fallback.
 google-genai==2.8.0
-openai==1.41.0
-langchain-core==1.4.9
+openai==2.45.0
+langchain-core==1.6.1
 langchain-community==0.4.2
 
 # ── Retrieval ────────────────────────────────────────────────
