@@ -85,3 +85,19 @@ def calculate_citation_coverage(answer: str, sources: Sequence[str]) -> float:
         return 1.0 if has_sources else 0.0
     else:
         return 1.0 if not has_sources else 0.0
+
+
+async def calculate_ttft(ask_stream_fn, question: str, k: int = 5) -> float:
+    """Measure time-to-first-token (ms) for a streaming query.
+
+    *ask_stream_fn* must be an async generator that yields ``(event, data)``
+    tuples (the signature of ``app.chain.ask_stream``).
+    """
+    import time
+
+    t0 = time.perf_counter()
+    async for event, _data in ask_stream_fn(question, k=k):
+        if event == "token":
+            return (time.perf_counter() - t0) * 1000
+    # Stream ended without a token — return total elapsed time.
+    return (time.perf_counter() - t0) * 1000
