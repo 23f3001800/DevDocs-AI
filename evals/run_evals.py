@@ -10,12 +10,12 @@ from pathlib import Path
 
 from evals.metrics import (
     calculate_citation_coverage,
-    calculate_source_membership,
     calculate_hit_rate,
     calculate_keyword_coverage,
     calculate_mrr,
     calculate_precision_at_k,
     calculate_recall_at_k,
+    calculate_source_membership,
     calculate_ttft,
 )
 
@@ -26,7 +26,6 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def run_ragas(records: dict[str, list]) -> dict[str, float]:
     """Run paid RAGAS judge metrics through the application's configured LLM."""
-    from app.llm_providers import llm_manager
     from datasets import Dataset
     from langchain_core.embeddings import Embeddings
     from langchain_core.outputs import Generation, LLMResult
@@ -34,6 +33,7 @@ def run_ragas(records: dict[str, list]) -> dict[str, float]:
     from ragas.llms.base import BaseRagasLLM
     from ragas.metrics import answer_relevancy, faithfulness
 
+    from app.llm_providers import llm_manager
     from app.vectorstore import VectorStore
 
     class PipelineJudge(BaseRagasLLM):

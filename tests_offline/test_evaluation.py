@@ -1,8 +1,9 @@
 """Run with python -m unittest discover -s tests_offline -v; no model downloads."""
 import unittest
 from types import SimpleNamespace
+
 from evals.metrics import calculate_source_membership
-from evals.run_evals import run, quality_gate
+from evals.run_evals import quality_gate, run
 
 
 class EvaluationTests(unittest.TestCase):
