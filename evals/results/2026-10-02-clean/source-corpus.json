@@ -1,0 +1,67 @@
+[
+  {
+    "doc_id": "doc_arch_01",
+    "source_path": "docs/architecture.md",
+    "content": "System Architecture\nDevDocs-AI exposes its application layer through FastAPI.\nIngestion flow: document -> parse/clean -> chunk -> embedding -> Chroma vector store, while\nlexical indexes are prepared for BM25 retrieval.\nQuery flow: user question -> BM25 retrieval + semantic vector retrieval -> Reciprocal Rank Fusion\n(RRF) -> cross-encoder reranking -> top contexts -> LLM answer grounded in retrieved context."
+  },
+  {
+    "doc_id": "doc_ingest_02",
+    "source_path": "docs/ingestion.md",
+    "content": "Ingestion and Chunk Metadata\nChunks retain source metadata so retrieved evidence can be traced back to the original developer\ndocument.\nRequired metadata fields in this evaluation fixture are doc_id, source_path, section, and\nchunk_index.\nA document is considered ready for retrieval only after chunk persistence and embedding/index\npersistence complete successfully."
+  },
+  {
+    "doc_id": "doc_embeddings_03",
+    "source_path": "docs/embeddings.md",
+    "content": "Embedding Model\nSemantic retrieval uses the sentence-transformers all-MiniLM-L6-v2 embedding model.\nThe embedding model converts chunks and queries into dense vectors so semantically related text\ncan match even when exact keywords differ."
+  },
+  {
+    "doc_id": "doc_vector_04",
+    "source_path": "docs/vector-store.md",
+    "content": "Vector Store\nChroma is used as the vector database for persisted chunk embeddings.\nVector search returns semantically similar chunks together with their stored source metadata."
+  },
+  {
+    "doc_id": "doc_retrieval_05",
+    "source_path": "docs/retrieval.md",
+    "content": "Hybrid Retrieval\nBM25 is the lexical retriever and is strong for exact terms such as function names, error strings, API\npaths, and identifiers.\nSemantic retrieval is strong for paraphrases and conceptually similar wording.\nDevDocs-AI runs both retrievers and combines their ranked results rather than relying on only one\nretrieval method."
+  },
+  {
+    "doc_id": "doc_fusion_06",
+    "source_path": "docs/ranking/rrf.md",
+    "content": "Reciprocal Rank Fusion\nReciprocal Rank Fusion (RRF) merges multiple ranked result lists using rank positions instead of\nrequiring comparable raw BM25 and vector similarity scores.\nA document appearing near the top of more than one retriever receives a stronger fused score."
+  },
+  {
+    "doc_id": "doc_rerank_07",
+    "source_path": "docs/ranking/reranker.md",
+    "content": "Cross-Encoder Reranking\nAfter RRF produces a candidate set, a cross-encoder reranker scores each question-chunk pair\njointly.\nOnly the highest-ranked reranked chunks are passed to the answer-generation step, improving\ncontext quality at the cost of extra latency."
+  },
+  {
+    "doc_id": "doc_api_08",
+    "source_path": "docs/api.md",
+    "content": "FastAPI Request Flow\nThe API validates a query request before retrieval begins.\nA successful query request is passed to the retrieval pipeline, and the final response contains the\ngenerated answer plus source references derived from retrieved metadata.\nValidation errors should stop before retrieval; retrieval or generation failures should return an error\nrather than a fabricated answer."
+  },
+  {
+    "doc_id": "doc_eval_09",
+    "source_path": "docs/evaluation.md",
+    "content": "RAG Evaluation\nRAGAS faithfulness checks whether claims in the generated answer are supported by the retrieved\ncontexts.\nAnswer relevancy checks whether the response actually addresses the user question.\nContext precision measures how much of the retrieved context is relevant; context recall measures\nwhether the needed reference information was retrieved.\nGround-truth document IDs are useful for retrieval metrics such as Recall@k, Precision@k, hit rate,\nand MRR even though those IDs are not themselves a standard RAGAS field."
+  },
+  {
+    "doc_id": "doc_failure_10",
+    "source_path": "docs/failure-handling.md",
+    "content": "Failure Handling\nIf embedding or index persistence fails during ingestion, the document must not be marked ready.\nIf retrieval fails during a query, the system should return an explicit failure instead of asking the LLM\nto guess without evidence.\nEvaluation failures should preserve the question, retrieved IDs, contexts, model response, and error\nmetadata for debugging."
+  },
+  {
+    "doc_id": "doc_metadata_11",
+    "source_path": "docs/metadata.md",
+    "content": "Metadata Filtering\nMetadata filters can restrict retrieval to a source_path, document, section, language, or version\nbefore final ranking.\nFilters should be applied consistently to both lexical and semantic candidate sets when the user\nexplicitly scopes a question."
+  },
+  {
+    "doc_id": "doc_security_12",
+    "source_path": "docs/security.md",
+    "content": "Grounding and Prompt Injection\nRetrieved developer documents are evidence, not trusted instructions to override the application or\nsystem prompt.\nInstructions embedded inside retrieved content such as \"ignore previous rules\" must be treated as\ndocument text, not executed as agent instructions.\nWhen the corpus does not contain enough evidence, the answer should state that the information is\nnot available in the indexed documentation rather than hallucinating."
+  },
+  {
+    "doc_id": "doc_versioning_13",
+    "source_path": "docs/versioning.md",
+    "content": "Version-Aware Retrieval\nWhen multiple versions of the same documentation are indexed, an explicit user version filter takes\npriority.\nWithout an explicit version request, the retrieval policy in this fixture prefers the latest indexed\nversion and keeps version metadata in citations."
+  }
+]
