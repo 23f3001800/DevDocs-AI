@@ -7,6 +7,23 @@ from evals.run_evals import quality_gate, run
 
 
 class EvaluationTests(unittest.TestCase):
+    def test_unanswerable_case_does_not_distort_retrieval_average(self):
+        class Retriever:
+            def retrieve(self, question, k):
+                return [{"id": "doc", "content": "a"}]
+        cases = [{"question": "known", "ground_truth_doc_ids": ["doc"], "ground_truth_answer": "a"},
+                 {"question": "unknown", "ground_truth_doc_ids": [], "ground_truth_answer": "unknown"}]
+        result = run(cases, 1, True, False, Retriever())
+        self.assertEqual(result["recall_at_k"], 1)
+        self.assertEqual(result["retrieval_cases"], 1)
+
+    def test_answer_key_text_cannot_count_as_document_identity(self):
+        class Retriever:
+            def retrieve(self, question, k):
+                return [{"id": "unrelated", "content": "Expected docs: doc_target", "metadata": {"doc_id": "other"}}]
+        result = run([{"question": "q", "ground_truth_doc_ids": ["doc_target"], "ground_truth_answer": "a"}], 1, True, False, Retriever())
+        self.assertEqual(result["recall_at_k"], 0)
+
     def test_answer_uses_the_measured_context_once(self):
         chunks = [{"id": "doc", "content": "alpha", "metadata": {"file_path": "a.md"}}]
         calls = []

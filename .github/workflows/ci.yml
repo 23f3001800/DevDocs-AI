@@ -78,6 +78,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       APP_ENV: development
+      CHROMA_PATH: /tmp/devdocs-ci-eval
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -102,10 +103,10 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Ingest evaluation PDF fixture
+      - name: Index only source documents, excluding the answer key
         run: |
           export PYTHONPATH=.
-          python scripts/ingest.py --source data/devdocs_ragas_eval_test_cases.pdf
+          python -m evals.prepare_fixture_corpus
 
       - name: Run evals
         run: |
@@ -183,5 +184,4 @@ jobs:
         with:
           app-name: devdocs-ai
           images: ghcr.io/${{ steps.repo.outputs.name }}:sha-${{ github.sha }}
-
 

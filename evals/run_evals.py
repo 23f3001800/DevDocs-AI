@@ -113,13 +113,14 @@ def run(cases: list[dict], k: int, retrieval_only: bool, use_ragas: bool, retrie
         chunks = retriever.retrieve(case["question"], k=k)
         relevant_ids = set(case["ground_truth_doc_ids"])
         retrieved_ids = [
-            next((doc_id for doc_id in relevant_ids if doc_id in chunk["content"]), chunk["id"])
+            chunk.get("metadata", {}).get("doc_id", chunk["id"])
             for chunk in chunks
         ]
-        retrieval["recall_at_k"].append(calculate_recall_at_k(relevant_ids, retrieved_ids, k))
-        retrieval["precision_at_k"].append(calculate_precision_at_k(relevant_ids, retrieved_ids, k))
-        retrieval["mrr"].append(calculate_mrr(relevant_ids, retrieved_ids, k))
-        retrieval["hit_rate"].append(calculate_hit_rate(relevant_ids, retrieved_ids, k))
+        if relevant_ids:
+            retrieval["recall_at_k"].append(calculate_recall_at_k(relevant_ids, retrieved_ids, k))
+            retrieval["precision_at_k"].append(calculate_precision_at_k(relevant_ids, retrieved_ids, k))
+            retrieval["mrr"].append(calculate_mrr(relevant_ids, retrieved_ids, k))
+            retrieval["hit_rate"].append(calculate_hit_rate(relevant_ids, retrieved_ids, k))
 
         if not retrieval_only:
             response = answer_fn(case["question"], chunks)
@@ -146,6 +147,7 @@ def run(cases: list[dict], k: int, retrieval_only: bool, use_ragas: bool, retrie
     results = {name: statistics.fmean(values) for name, values in scores.items() if values}
     results["avg_latency_ms"] = statistics.fmean(latencies)
     results["cases"] = len(cases)
+    results["retrieval_cases"] = len(retrieval["recall_at_k"])
     results["answer_failures"] = failures
     if use_ragas:
         results.update(run_ragas(ragas_records))
@@ -351,4 +353,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
