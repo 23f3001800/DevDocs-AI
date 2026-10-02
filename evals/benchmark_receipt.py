@@ -23,7 +23,8 @@ def main():
     output.mkdir(exist_ok=True)
     dataset = Path("data/eval_dataset.json")
     corpus = Path("data/devdocs_ragas_eval_test_cases.pdf")
-    cases = load_cases(dataset)
+    all_cases = load_cases(dataset)
+    cases = [case for case in all_cases if case["ground_truth_doc_ids"]]
     configurations = {
         "Dense": _DenseOnlyRetriever(),
         "BM25": _BM25OnlyRetriever(),
@@ -40,11 +41,12 @@ def main():
         "dataset_sha256": hashlib.sha256(dataset.read_bytes()).hexdigest(),
         "corpus_sha256": hashlib.sha256(corpus.read_bytes()).hexdigest(),
         "cases": len(cases),
+        "excluded_unanswerable_cases": [c["case_id"] for c in all_cases if not c["ground_truth_doc_ids"]],
         "chunks": VectorStore().count(),
         "k": 5,
         "generation_evaluated": False,
         "scope": "Existing labelled PDF fixture; not held-out cross-repository evaluation",
-        "metric_note": "Document labels are matched inside fixture chunks using the existing evaluator. Inspect per-case contexts for label-matching limitations.",
+        "metric_note": "Relevance uses document identity in metadata, never answer-key IDs found inside chunk text. Only answerable cases enter retrieval averages.",
         "configurations": {},
     }
     for name, retriever in configurations.items():

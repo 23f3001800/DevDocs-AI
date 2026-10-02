@@ -26,7 +26,7 @@ jobs:
       - name: Ingest a clean evaluation corpus
         run: |
           export PYTHONPATH=.
-          python scripts/ingest.py --source data/devdocs_ragas_eval_test_cases.pdf
+          python -m evals.prepare_fixture_corpus
       - name: Run measured retrieval benchmark
         run: python -m evals.benchmark_receipt
       - name: Save dependency versions

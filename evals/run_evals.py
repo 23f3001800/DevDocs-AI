@@ -113,7 +113,7 @@ def run(cases: list[dict], k: int, retrieval_only: bool, use_ragas: bool, retrie
         chunks = retriever.retrieve(case["question"], k=k)
         relevant_ids = set(case["ground_truth_doc_ids"])
         retrieved_ids = [
-            next((doc_id for doc_id in relevant_ids if doc_id in chunk["content"]), chunk["id"])
+            chunk.get("metadata", {}).get("doc_id", chunk["id"])
             for chunk in chunks
         ]
         retrieval["recall_at_k"].append(calculate_recall_at_k(relevant_ids, retrieved_ids, k))
@@ -351,4 +351,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
