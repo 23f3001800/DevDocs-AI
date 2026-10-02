@@ -78,7 +78,7 @@ def calculate_keyword_coverage(answer: str, ground_truth: str) -> float:
 
 
 def calculate_citation_coverage(answer: str, sources: Sequence[str]) -> float:
-    """Return one when the model provides sources for its answer in the structured output."""
+    """Legacy source-presence metric; does not check citation correctness."""
     has_answer = bool(answer.strip())
     has_sources = len(sources) > 0
     if has_answer:
@@ -101,3 +101,11 @@ async def calculate_ttft(ask_stream_fn, question: str, k: int = 5) -> float:
             return (time.perf_counter() - t0) * 1000
     # Stream ended without a token — return total elapsed time.
     return (time.perf_counter() - t0) * 1000
+
+
+
+def calculate_source_membership(sources: Sequence[str], context_sources: Sequence[str]) -> float:
+    """Fraction of unique cited paths present in context, not semantic support."""
+    cited = set(sources)
+    allowed = {source for source in context_sources if source}
+    return len(cited & allowed) / len(cited) if cited else 0.0

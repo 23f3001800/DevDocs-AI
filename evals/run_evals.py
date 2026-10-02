@@ -8,11 +8,9 @@ import sys
 import time
 from pathlib import Path
 
-from app.chain import ask
-from app.llm_providers import llm_manager
-from app.retriever_instance import get_retriever
 from evals.metrics import (
     calculate_citation_coverage,
+    calculate_source_membership,
     calculate_hit_rate,
     calculate_keyword_coverage,
     calculate_mrr,
@@ -28,6 +26,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def run_ragas(records: dict[str, list]) -> dict[str, float]:
     """Run paid RAGAS judge metrics through the application's configured LLM."""
+    from app.llm_providers import llm_manager
     from datasets import Dataset
     from langchain_core.embeddings import Embeddings
     from langchain_core.outputs import Generation, LLMResult
@@ -90,11 +89,21 @@ def load_cases(path: Path) -> list[dict]:
 
 # ── Core evaluation runner ───────────────────────────────────────────────────
 
-def run(cases: list[dict], k: int, retrieval_only: bool, use_ragas: bool, retriever=None) -> dict[str, float | int]:
+def run(cases: list[dict], k: int, retrieval_only: bool, use_ragas: bool, retriever=None, answer_fn=None) -> dict[str, float | int]:
+    if not cases or k < 1:
+        raise ValueError("Provide at least one case and k >= 1")
+    if use_ragas and retrieval_only:
+        raise ValueError("RAGAS requires answer evaluation")
     if retriever is None:
+        from app.retriever_instance import get_retriever
+
         retriever = get_retriever()
+    if not retrieval_only and answer_fn is None:
+        from app.chain import answer_from_chunks
+
+        answer_fn = answer_from_chunks
     retrieval = {name: [] for name in ("recall_at_k", "precision_at_k", "mrr", "hit_rate")}
-    answer_scores = {name: [] for name in ("keyword_coverage", "citation_coverage")}
+    answer_scores = {name: [] for name in ("keyword_coverage", "source_presence", "source_membership")}
     latencies = []
     failures = 0
     ragas_records = {"question": [], "contexts": [], "answer": [], "ground_truth": []}
@@ -113,7 +122,7 @@ def run(cases: list[dict], k: int, retrieval_only: bool, use_ragas: bool, retrie
         retrieval["hit_rate"].append(calculate_hit_rate(relevant_ids, retrieved_ids, k))
 
         if not retrieval_only:
-            response = ask(case["question"], k=k)
+            response = answer_fn(case["question"], chunks)
             ragas_records["question"].append(case["question"])
             ragas_records["contexts"].append([chunk["content"] for chunk in chunks])
             ragas_records["answer"].append(response.answer)
@@ -121,8 +130,14 @@ def run(cases: list[dict], k: int, retrieval_only: bool, use_ragas: bool, retrie
             answer_scores["keyword_coverage"].append(
                 calculate_keyword_coverage(response.answer, case["ground_truth_answer"])
             )
-            answer_scores["citation_coverage"].append(
+            answer_scores["source_presence"].append(
                 calculate_citation_coverage(response.answer, response.sources)
+            )
+            answer_scores["source_membership"].append(
+                calculate_source_membership(
+                    response.sources,
+                    [c.get("metadata", {}).get("file_path") for c in chunks],
+                )
             )
             failures += int(not response.has_answer)
         latencies.append((time.perf_counter() - started) * 1000)
@@ -222,7 +237,7 @@ def run_compare(cases: list[dict], k: int, retrieval_only: bool, use_ragas: bool
     }
     all_results = {}
     for name, retriever in configs.items():
-        print(f"Running {name}...")
+        print(f"Running {name}...", file=sys.stderr)
         all_results[name] = run(
             cases, k=k, retrieval_only=retrieval_only,
             use_ragas=use_ragas, retriever=retriever,
@@ -249,6 +264,19 @@ def run_ttft(question: str, k: int = 5, runs: int = 1) -> dict[str, float]:
 
 # ── CLI ──────────────────────────────────────────────────────────────────────
 
+def quality_gate(results, threshold):
+    """Gate retrieval metrics individually; source presence cannot hide poor recall."""
+    if threshold is None:
+        return 0
+    for result in results:
+        for name in ("recall_at_k", "mrr"):
+            value = result.get(name)
+            if value is None or not 0 <= value <= 1 or value < threshold:
+                print(f"Quality gate failed: {name}={value}, required {threshold}", file=sys.stderr)
+                return 1
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dataset", type=Path, default=ROOT / "data" / "eval_dataset.json")
@@ -256,7 +284,7 @@ def main() -> int:
     parser.add_argument("--retrieval-only", action="store_true", help="Skip LLM answer evaluation")
     parser.add_argument("--ragas", action="store_true", help="Run RAGAS LLM-judge metrics")
     parser.add_argument("--json", action="store_true", dest="as_json", help="Print JSON output")
-    parser.add_argument("--fail-under", type=float, help="Fail if mean quality is lower")
+    parser.add_argument("--fail-under", type=float, help="Minimum recall and MRR required for every configuration")
     parser.add_argument(
         "--compare", action="store_true",
         help="Run all four retrieval configs (Dense, BM25, Hybrid, Hybrid+Rerank) side-by-side",
@@ -269,6 +297,10 @@ def main() -> int:
     args = parser.parse_args()
     if args.k < 1:
         parser.error("--k must be at least 1")
+    if args.ttft_runs < 1:
+        parser.error("--ttft-runs must be at least 1")
+    if args.fail_under is not None and not 0 <= args.fail_under <= 1:
+        parser.error("--fail-under must be between 0 and 1")
 
     try:
         if args.ragas and args.retrieval_only:
@@ -282,7 +314,7 @@ def main() -> int:
             if args.as_json:
                 print(json.dumps(all_results, indent=2, sort_keys=True))
             else:
-                header = "Configuration | Recall@K | Hit Rate | MRR | Keyword Cov. | Citation Cov. | Latency (ms)"
+                header = "Configuration | Recall@K | Hit Rate | MRR | Keyword Cov. | Source Presence | Latency (ms)"
                 print(f"\n{'=' * len(header)}")
                 print(header)
                 print(f"{'-' * len(header)}")
@@ -290,10 +322,10 @@ def main() -> int:
                     print(
                         f"{name:25s} | {res.get('recall_at_k', 0):.3f}    | {res.get('hit_rate', 0):.3f}    "
                         f"| {res.get('mrr', 0):.3f} | {res.get('keyword_coverage', 0):.3f}        "
-                        f"| {res.get('citation_coverage', 0):.3f}         | {res.get('avg_latency_ms', 0):.0f}"
+                        f"| {res.get('source_presence', 0):.3f}         | {res.get('avg_latency_ms', 0):.0f}"
                     )
                 print(f"{'=' * len(header)}\n")
-            return 0
+            return quality_gate(all_results.values(), args.fail_under)
 
         # ── Standard single-config eval ──────────────────────────────────
         results = run(cases, args.k, args.retrieval_only, args.ragas)
@@ -314,16 +346,9 @@ def main() -> int:
         for name, value in results.items():
             print(f"{name:22} {value:.3f}" if isinstance(value, float) else f"{name:22} {value}")
 
-    if args.fail_under is not None:
-        quality_names = {"recall_at_k", "mrr", "keyword_coverage", "citation_coverage"}
-        quality = statistics.fmean(
-            value for name, value in results.items() if name in quality_names
-        )
-        if quality < args.fail_under:
-            print(f"Quality gate failed: {quality:.3f} < {args.fail_under:.3f}", file=sys.stderr)
-            return 1
-    return 0
+    return quality_gate([results], args.fail_under)
 
 
 if __name__ == "__main__":
     raise SystemExit(main())
+

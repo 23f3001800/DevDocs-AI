@@ -1,6 +1,6 @@
 # DevDocs AI
 
-**RAG over any GitHub repo or docs site — instant, grounded answers from your codebase, no sign-up required.**
+Ask questions about an ingested GitHub repository, documentation site, or PDF.
 
 [![CI/CD](https://github.com/23f3001800/DevDocs-AI/actions/workflows/ci.yml/badge.svg)](https://github.com/23f3001800/DevDocs-AI/actions)
 [![Docker](https://img.shields.io/badge/docker-ready-blue?logo=docker)](Dockerfile)
@@ -40,7 +40,7 @@ Gemini is the only LLM provider. Without a server key the app falls back to a mo
 |---------|---------------|
 | 🔍 **Hybrid Search** | Dense embeddings (MiniLM) + BM25 sparse + RRF fusion |
 | 🎯 **Cross-Encoder Reranking** | ms-marco-MiniLM-L-6-v2 for final precision |
-| ⚡ **Streaming Answers** | Server-Sent Events, real-time token delivery (~300ms TTFT) |
+| ⚡ **Streaming Answers** | Server-Sent Events, token delivery as the provider responds |
 | 🧑‍💻 **Anonymous sessions** | Signed HttpOnly cookie scopes a private KB + chat history — no account required |
 | 🔑 **BYOK** | Bring your own Gemini key to answer past the free daily limit |
 | 🐳 **Production Docker** | Multi-stage, non-root, HEALTHCHECK, CPU-only torch, models baked in |
@@ -51,68 +51,45 @@ Gemini is the only LLM provider. Without a server key the app falls back to a mo
 
 ## Evaluation
 
-All numbers below are **real, measured values** from our golden dataset of 20 questions against the FastAPI documentation (~23 500 chunks). Nothing is fabricated. A mediocre number with an explanation is stronger than an unexplained "98% accuracy."
+The evaluation runner compares dense search, BM25, hybrid retrieval and hybrid
+retrieval with reranking. Generation now uses exactly the chunks retrieved by
+each configuration. Earlier versions retrieved once for scoring and then called
+the default pipeline again for generation, so the old answer-quality comparison
+cannot establish which retrieval strategy was better.
 
-Run the evaluation yourself:
+The previous README reported Recall@5 of 0.893 for hybrid retrieval and keyword
+coverage of 0.932 for hybrid with reranking. Treat those as historical results,
+not current benchmarks. The current checked-in dataset is a 20-question PDF
+fixture; it should not be confused with the older FastAPI documentation run.
+A fresh, versioned run is needed before making performance claims.
+
 ```bash
-# Standard eval (default Hybrid + Reranking config)
-python -m evals.run_evals
-
-# Compare all four retrieval strategies side-by-side
-python -m evals.run_evals --compare
-
-# Include streaming time-to-first-token measurement
-python -m evals.run_evals --ttft --ttft-runs 3
-
-# JSON output for CI pipelines
+python scripts/ingest.py --source data/devdocs_ragas_eval_test_cases.pdf
+python -m evals.run_evals --compare --retrieval-only --json
 python -m evals.run_evals --compare --json
+python -m unittest discover -s tests_offline -v
 ```
 
-### Retrieval Quality
+The second comparison includes generation and needs a configured model provider.
+Without a real provider, mock responses are useful for plumbing checks only.
 
-We measure whether the retriever surfaces the right documents before the LLM ever sees them.
+- Recall@K and MRR measure retrieval against the fixture's document labels.
+- Keyword coverage measures word overlap with a reference answer. It does not
+  establish factual correctness.
+- Source presence records whether an answer has source paths.
+- Source membership checks whether those paths came from the retrieved context.
+  The application rebuilds source paths from context, so this is an integrity
+  check, not an independent measure of citation quality.
+- Claim-level support still needs human review or a separately validated judge.
 
-| Configuration | Recall@5 | Hit Rate@5 | MRR | Latency (ms) |
-|---|---|---|---|---|
-| **Dense** (MiniLM) | 0.882 | 0.950 | 0.900 | 2,676 † |
-| **BM25** | 0.857 | 0.950 | 0.900 | 2,676 |
-| **Hybrid** (Dense + BM25 + RRF) | **0.893** | 0.950 | **0.917** | 2,838 |
-| **Hybrid + Reranking** | 0.855 | 0.950 | 0.892 | 5,724 |
+CI runs a retrieval-only smoke gate with a minimum recall and MRR of 0.5.
+Deployment waits for that gate as well as the Docker build. This threshold catches
+large regressions on a small fixture; it is not a production quality guarantee.
+The offline contract tests exercise runner wiring without calling a model.
 
-- **Recall@5** — fraction of ground-truth documents found in the top 5 results. Hybrid's RRF fusion gives the best recall (0.893) by combining signals from both retrievers.
-- **Hit Rate@5** — did *any* relevant document appear? 0.950 across the board (19/20 questions hit).
-- **MRR** — reciprocal rank of the first correct result. Hybrid (0.917) ranks the right document highest on average.
-- **Why Hybrid+Rerank has lower recall than plain Hybrid** — the cross-encoder reranker aggressively re-scores and can push borderline-relevant documents below the top-5 cutoff. It trades recall for *precision*: the documents it does return are higher quality (see Keyword Coverage below).
-
-†*Dense latency excludes the first-run cold-start (model loading, API init). Steady-state latency is comparable to BM25.*
-
-### Generation Quality (Grounding)
-
-We measure whether the LLM's answer is actually grounded in the retrieved context — not hallucinated.
-
-| Configuration | Keyword Coverage | Citation Coverage | Answer Failures |
-|---|---|---|---|
-| **Dense** | 0.918 | 1.000 | 0 / 20 |
-| **BM25** | 0.906 | 1.000 | 0 / 20 |
-| **Hybrid** | 0.897 | 1.000 | 0 / 20 |
-| **Hybrid + Reranking** | **0.932** | 1.000 | 0 / 20 |
-
-- **Keyword Coverage** — what fraction of key concepts from the ground-truth answer appear in the LLM's response. Hybrid+Reranking scores highest (0.932) because the reranker feeds the LLM the most relevant chunks, so it covers more of the expected answer.
-- **Citation Coverage** — does the LLM cite its sources in the structured JSON output? 1.000 = the model always returns source file paths alongside its answer. This is enforced by the strict JSON prompt format in `chain.py`.
-- **Answer Failures** — cases where the LLM set `has_answer=false`. Zero failures across all configurations.
-- **RAGAS faithfulness / answer relevancy** — supported via `--ragas` flag (requires LLM-as-judge calls). Not included in the table above because the free-tier quota is too low for reliable batch evaluation. When API budget permits, run `python -m evals.run_evals --ragas`.
-
-### System Performance
-
-| Metric | Value | Notes |
-|---|---|---|
-| **End-to-end latency** | 2,838 – 5,724 ms | Hybrid is ~2.8s; reranking adds ~3s |
-| **TTFT (time-to-first-token)** | ~300 ms (warm) | Via SSE streaming; measured with `--ttft` flag |
-| **TTFT (cold / rate-limited)** | 40–55 s | When Gemini quota is exhausted and the OpenRouter fallback activates, the Gemini SDK retry-sleep dominates TTFT |
-
-- Latency is measured end-to-end: retrieval + LLM generation + JSON parsing.
-- TTFT is the time from request to the first streamed token arriving at the client. The warm-cache number (~300 ms) is what users experience under normal conditions.
-- The cold/rate-limited TTFT is a known consequence of the Gemini SDK's built-in retry backoff. The OpenRouter fallback catches it — but the SDK sleeps first.
+Next evaluation work: held-out repositories, unanswerable questions, independent
+citation grading, repeated runs, and latency percentiles with hardware and model
+versions recorded. No current time-to-first-token benchmark is claimed.
 
 ---
 
@@ -355,3 +332,4 @@ Stated plainly rather than discovered in production:
 ## License
 
 MIT — see [LICENSE](LICENSE) for details.
+

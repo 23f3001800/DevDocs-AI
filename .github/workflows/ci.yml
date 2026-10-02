@@ -61,6 +61,9 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
+      - name: Check evaluation contracts without model calls
+        run: python -m unittest discover -s tests_offline -v
+
       - name: Run tests
         run: |
           export PYTHONPATH=.
@@ -107,7 +110,7 @@ jobs:
       - name: Run evals
         run: |
           export PYTHONPATH=.
-          python evals/run_evals.py
+          python -m evals.run_evals --retrieval-only --fail-under 0.5 --json
 
   # ──────────────────────────────────────────────
   # 3. Docker — build (and push on main) to GHCR
@@ -148,7 +151,7 @@ jobs:
   # 4. Deploy — Azure App Service (main only)
   # ──────────────────────────────────────────────
   deploy:
-    needs: docker
+    needs: [docker, eval]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     environment: production
@@ -180,4 +183,5 @@ jobs:
         with:
           app-name: devdocs-ai
           images: ghcr.io/${{ steps.repo.outputs.name }}:sha-${{ github.sha }}
+
 

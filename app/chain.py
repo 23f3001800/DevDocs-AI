@@ -122,6 +122,13 @@ def ask(question: str, k: int = 5, owner: str | None = None, api_key: str | None
     """
     chunks = get_retriever().retrieve(question, k=k, owner=owner)
 
+    return answer_from_chunks(question, chunks, owner=owner, api_key=api_key)
+
+
+def answer_from_chunks(
+    question: str, chunks: list[dict], owner: str | None = None, api_key: str | None = None
+) -> RAGResponse:
+    """Generate from the exact retrieved context, without a second retrieval."""
     if not chunks:
         return RAGResponse(
             answer=_no_documents_message(owner),
@@ -225,3 +232,4 @@ async def ask_stream(question: str, k: int = 5, owner: str | None = None, api_ke
 
     # dict.fromkeys dedupes while preserving retrieval order (set() would not).
     yield "sources", list(dict.fromkeys(sources))
+
