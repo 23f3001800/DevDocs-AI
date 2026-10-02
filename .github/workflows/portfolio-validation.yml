@@ -1,0 +1,42 @@
+name: Portfolio validation
+on:
+  push:
+    branches: [validation/real-rag-2026-10-02]
+permissions:
+  contents: read
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      APP_ENV: development
+      CHROMA_PATH: /tmp/devdocs-benchmark-chroma
+      GOOGLE_API_KEY: ""
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: hf-${{ runner.os }}-minilm-msmarco-v1
+      - run: pip install -r requirements.txt
+      - name: Ingest a clean evaluation corpus
+        run: |
+          export PYTHONPATH=.
+          python scripts/ingest.py --source data/devdocs_ragas_eval_test_cases.pdf
+      - name: Run measured retrieval benchmark
+        run: python -m evals.benchmark_receipt
+      - name: Save dependency versions
+        if: always()
+        run: |
+          mkdir -p benchmark-results
+          pip freeze > benchmark-results/dependencies.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: rag-benchmark-results
+          path: benchmark-results/
+          retention-days: 14
