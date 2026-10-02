@@ -57,14 +57,40 @@ each configuration. Earlier versions retrieved once for scoring and then called
 the default pipeline again for generation, so the old answer-quality comparison
 cannot establish which retrieval strategy was better.
 
-The previous README reported Recall@5 of 0.893 for hybrid retrieval and keyword
-coverage of 0.932 for hybrid with reranking. Treat those as historical results,
-not current benchmarks. The current checked-in dataset is a 20-question PDF
-fixture; it should not be confused with the older FastAPI documentation run.
-A fresh, versioned run is needed before making performance claims.
+### Fresh retrieval results — 2 October 2026
+
+The clean benchmark indexes **13 source documents** and evaluates **19 answerable
+questions at k=5**, with three passes per configuration. Questions and expected
+answers are excluded from the index. Relevance is scored using document metadata.
+
+| Configuration | Recall@5 | MRR@5 | Hit@5 | Warm p50 (ms) | Warm p95 (ms) |
+|---|---:|---:|---:|---:|---:|
+| Dense | 0.8605 | 0.9211 | 0.9474 | 2.84 | 2.88 |
+| BM25 | 0.8605 | 0.8526 | 0.9474 | 0.17 | 0.25 |
+| Hybrid | 0.8605 | 0.8860 | 0.9474 | 2.24 | 2.35 |
+| Hybrid + reranking | 0.8605 | 0.9474 | 0.9474 | 291.88 | 309.71 |
+
+[Successful run](https://github.com/23f3001800/DevDocs-AI/actions/runs/37021038575)
+· [Versioned results, source corpus and dependencies](https://github.com/23f3001800/DevDocs-AI/tree/fc198b27a908d110d267ee3121b778a4b51c037a/evals/results/2026-10-02-clean)
+· Evaluated code: `11ba42d511c72d8da6a453315a4e8b3ff9e4d1ff`.
+
+Quality scores were identical across three passes. Latencies use passes two and
+three on a four-CPU runner with warm query caches; they are not production or
+cold-start measurements. Reranking improved first-result ranking over hybrid
+retrieval here but did not improve recall, and added substantial latency.
+
+This is a small controlled fixture, not an external generalization test. One
+unanswerable case is excluded from retrieval averages. Generated-answer quality,
+faithfulness and abstention were **not evaluated** in this run.
+
+The earlier fresh run indexed the whole PDF, including its answer key; those
+scores are withdrawn. The older 0.893 recall and 0.932 keyword-coverage claims
+also must not be presented as current, comparable results. Changing the corpus
+and scoring protocol prevents a valid before/after improvement percentage.
 
 ```bash
-python scripts/ingest.py --source data/devdocs_ragas_eval_test_cases.pdf
+export CHROMA_PATH="$(mktemp -d)"
+python -m evals.prepare_fixture_corpus
 python -m evals.run_evals --compare --retrieval-only --json
 python -m evals.run_evals --compare --json
 python -m unittest discover -s tests_offline -v
@@ -87,9 +113,9 @@ Deployment waits for that gate as well as the Docker build. This threshold catch
 large regressions on a small fixture; it is not a production quality guarantee.
 The offline contract tests exercise runner wiring without calling a model.
 
-Next evaluation work: held-out repositories, unanswerable questions, independent
-citation grading, repeated runs, and latency percentiles with hardware and model
-versions recorded. No current time-to-first-token benchmark is claimed.
+Next evaluation work: held-out repositories, real answer generation, unanswerable
+questions and independent citation grading. No current time-to-first-token
+benchmark is claimed. All 12 offline evaluation-contract tests pass.
 
 ---
 
