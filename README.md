@@ -20,6 +20,12 @@ Developers waste **hours** searching through docs, README files, and source code
 
 ---
 
+## Architecture Overview
+
+<p align="center">
+  <img src="assets/pipeline-flow.svg" width="100%" alt="DevDocs AI system architecture" />
+</p>
+
 ## How It Works — Anonymous Per-Session
 
 There is **no login, no account, no roles**. The server issues an opaque, signed `HttpOnly`, `SameSite=Lax` session cookie. The browser sends it automatically; client-supplied owner identifiers are ignored, so changing a header cannot impersonate another session.
