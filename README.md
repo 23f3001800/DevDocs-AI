@@ -118,30 +118,59 @@ We measure whether the LLM's answer is actually grounded in the retrieved contex
 
 ## Architecture
 
-```mermaid
-graph TB
-    subgraph Ingestion
-        A[GitHub Repo / URL / PDF] --> B[Loaders]
-        B --> C[Language-Aware Chunker]
-        C --> D[SentenceTransformer Embed]
-        D --> E[(ChromaDB)]
-    end
+<p align="center">
+  <img src="assets/pipeline-flow.svg" width="100%" alt="Animated DevDocs AI ingestion and query pipeline" />
+</p>
 
-    subgraph Query Pipeline
-        F[User Question + Signed Session Cookie] --> G[FastAPI]
-        G --> H{Hybrid Retrieval - session-scoped}
-        H --> I[Dense Search - MiniLM]
-        H --> J[BM25 Sparse Search]
-        I --> K[RRF Merge]
-        J --> K
-        K --> L[CrossEncoder Rerank]
-        L --> M[Gemini - Streaming]
-        M --> N[Grounded Answer + Sources]
-    end
+<details>
+<summary><strong>1 · Ingest documentation</strong></summary>
 
-    E -.-> I
-    E -.-> J
+Repositories, documentation sites, and PDFs are loaded, split with language-aware chunking, embedded with MiniLM, and stored in a private ChromaDB collection.
+
+</details>
+
+<details>
+<summary><strong>2 · Retrieve with two signals</strong></summary>
+
+Each question runs through semantic dense search and keyword-sensitive BM25 search. Reciprocal Rank Fusion merges both rankings.
+
+</details>
+
+<details>
+<summary><strong>3 · Rerank and generate</strong></summary>
+
+A CrossEncoder reranks candidates before Gemini streams a grounded answer and its source paths over Server-Sent Events.
+
+</details>
+
+## Observability
+
+DevDocs AI has two complementary observability paths:
+
+### Built-in operational metrics
+
+The public `GET /metrics` endpoint exposes lightweight, in-process measurements:
+
+- Request and error counts
+- Average and p95 end-to-end latency
+- Average and p95 time-to-first-token (TTFT)
+- LLM calls, failures, average duration, and providers used
+- Embedding-cache hits, misses, hit rate, and current size
+- Answers returned with source citations
+
+These counters are process-local and reset when the application restarts. With multiple workers or replicas, each process reports only its own measurements. Use a shared monitoring system such as Prometheus before relying on them for production-wide reporting.
+
+### Optional LangSmith tracing
+
+LangSmith tracing is installed but disabled by default. When enabled, the synchronous and streaming RAG chains are recorded as `ask_sync` and `ask_stream` traces, making it possible to inspect execution timing and failures outside the application.
+
+```env
+LANGCHAIN_TRACING_V2=true
+LANGCHAIN_API_KEY=your-langsmith-api-key
+LANGCHAIN_PROJECT=devdocs-ai
 ```
+
+If tracing is disabled or the LangSmith package is unavailable, its decorators become no-ops and the RAG pipeline continues normally. LangSmith is therefore an optional external tracing integration—not a required runtime dependency or a complete monitoring stack.
 
 ---
 
