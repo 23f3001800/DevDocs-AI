@@ -329,11 +329,7 @@ async function sendMessage() {
     // Add assistant message with typing indicator
     const msgEl = appendMessage("assistant", "", "DevDocs AI");
     const contentEl = msgEl.querySelector(".message-content");
-    contentEl.innerHTML = `<div class="typing-indicator">
-        <div class="typing-dot"></div>
-        <div class="typing-dot"></div>
-        <div class="typing-dot"></div>
-    </div>`;
+    contentEl.innerHTML = `<div class="stream-status" role="status" aria-live="polite"><span class="streaming-spinner"></span><span class="stream-phase">Starting…</span><span class="stream-latency">0 ms</span></div><div class="stream-progress">Preparing a response…</div>`;
 
     isStreaming = true;
     sendBtn.classList.add("hidden");
@@ -347,10 +343,21 @@ async function sendMessage() {
     let sources = [];
     let renderQueued = false;
     let firstToken = true;
+    let responseMetrics = {};
+    let streamPhase = "Starting…";
+    let streamMessage = "Preparing a response…";
+    let firstTokenMs = null;
+    const streamStartedAt = performance.now();
+
+    const statusMarkup = () => `<div class="stream-status" role="status" aria-live="polite"><span class="streaming-spinner"></span><span class="stream-phase">${escapeHtml(streamPhase)}</span><span class="stream-latency">${Math.round(performance.now() - streamStartedAt)} ms${firstTokenMs !== null ? ` · TTFT ${firstTokenMs} ms` : ""}</span></div><div class="stream-progress">${escapeHtml(streamMessage)}</div>`;
+    const latencyTimer = setInterval(() => {
+        const latencyEl = msgEl.querySelector(".stream-latency");
+        if (latencyEl) latencyEl.textContent = `${Math.round(performance.now() - streamStartedAt)} ms${firstTokenMs !== null ? ` · TTFT ${firstTokenMs} ms` : ""}`;
+    }, 100);
 
     const paint = () => {
         renderQueued = false;
-        contentEl.innerHTML = renderMarkdown(fullText) + renderSources(sources);
+        contentEl.innerHTML = statusMarkup() + renderMarkdown(fullText) + renderSources(sources);
         scrollToBottom();
     };
     const schedulePaint = () => {
@@ -415,11 +422,25 @@ async function sendMessage() {
                     }
                 } else if (evt.event === "token") {
                     if (firstToken) {
-                        contentEl.innerHTML = "";
+                        firstTokenMs = Math.round(performance.now() - streamStartedAt);
+                        streamPhase = "Generating";
+                        streamMessage = "Writing your answer…";
                         firstToken = false;
                     }
                     fullText += evt.data.text ?? "";
                     schedulePaint();
+                } else if (evt.event === "status") {
+                    streamPhase = evt.data.phase === "retrieving" ? "Searching" : "Composing";
+                    streamMessage = evt.data.message || "Working…";
+                    const progressEl = msgEl.querySelector(".stream-progress");
+                    if (progressEl) progressEl.textContent = streamMessage;
+                } else if (evt.event === "status") {
+                    streamPhase = evt.data.phase === "retrieving" ? "Searching" : "Composing";
+                    streamMessage = evt.data.message || "Working…";
+                    const progressEl = msgEl.querySelector(".stream-progress");
+                    if (progressEl) progressEl.textContent = streamMessage;
+                } else if (evt.event === "metrics") {
+                    responseMetrics = evt.data || {};
                 } else if (evt.event === "sources") {
                     sources = evt.data.sources ?? [];
                     schedulePaint();
@@ -430,6 +451,12 @@ async function sendMessage() {
             }
         }
 
+        streamPhase = "Complete";
+        streamMessage = "Answer ready";
+        clearInterval(latencyTimer);
+        streamPhase = "Complete";
+        streamMessage = "Answer ready";
+        clearInterval(latencyTimer);
         paint(); // final synchronous render — never leave a queued frame unpainted
 
         if (streamError) {
@@ -441,6 +468,7 @@ async function sendMessage() {
             }
             scrollToBottom();
         }
+        renderResponseMetrics(msgEl, { ...responseMetrics, latency_ms: Math.round(performance.now() - streamStartedAt), ttft_ms: firstTokenMs, citation_count: sources.length });
         attachMessageActions(msgEl, fullText, question);
     } catch (err) {
         if (err.name === "AbortError") {
@@ -449,8 +477,10 @@ async function sendMessage() {
         } else {
             contentEl.innerHTML = `<span style="color: var(--error)">⚠️ ${escapeHtml(err.message)}</span>`;
         }
+        renderResponseMetrics(msgEl, { ...responseMetrics, latency_ms: Math.round(performance.now() - streamStartedAt), ttft_ms: firstTokenMs, citation_count: sources.length });
         attachMessageActions(msgEl, fullText, question);
     } finally {
+        clearInterval(latencyTimer);
         isStreaming = false;
         currentAbortController = null;
         stopBtn.classList.add("hidden");
@@ -522,6 +552,14 @@ function appendLimitPrompt(contentEl, question) {
  * Add a Copy button (and, for the most recent answer, a Retry button) below
  * an assistant message once its final text is known.
  */
+function renderResponseMetrics(msgEl, metrics) {
+    const el = msgEl.querySelector(".response-metrics");
+    if (!el) return;
+    const item = (label, value) => `<span class="response-metric"><b>${escapeHtml(String(value ?? "—"))}</b><small>${label}</small></span>`;
+    el.innerHTML = item("Latency", `${metrics.latency_ms ?? "—"} ms`) + item("TTFT", `${metrics.ttft_ms ?? "—"} ms`) + item("Confidence", metrics.confidence == null ? "—" : `${Math.round(metrics.confidence * 100)}%`) + item("Citations", metrics.citation_count ?? 0);
+    el.classList.remove("hidden");
+}
+
 function attachMessageActions(msgEl, finalText, question) {
     const actions = msgEl.querySelector(".message-actions");
     if (!actions) return;
@@ -538,7 +576,6 @@ function attachMessageActions(msgEl, finalText, question) {
             copyBtn.textContent = "Copied!";
         } catch {
             copyBtn.textContent = "Copy failed";
-        } finally {
             setTimeout(() => (copyBtn.textContent = "Copy"), 1500);
         }
     });
@@ -606,7 +643,7 @@ function appendMessage(role, content, sender) {
         <div class="message-body">
             <div class="message-sender">${escapeHtml(sender)}</div>
             <div class="message-content">${content ? renderMarkdown(content) : ""}</div>
-            ${role === "assistant" ? '<div class="message-actions hidden"></div>' : ""}
+            ${role === "assistant" ? '<div class="response-metrics hidden" aria-label="Response metrics"></div><div class="message-actions hidden"></div>' : ""}
         </div>
     `;
 
@@ -756,6 +793,7 @@ async function deleteMyUploadedDocuments() {
     } catch {
         // Best-effort — the conversation delete above already succeeded.
     } finally {
+        clearInterval(latencyTimer);
         if ($("#view-ingest").classList.contains("active")) loadMySources();
     }
 }
@@ -835,6 +873,7 @@ async function submitIngestForm(form, source) {
     } catch (err) {
         show(`❌ ${err.message}`, "error");
     } finally {
+        clearInterval(latencyTimer);
         setLoading(btn, false);
     }
 }
@@ -981,6 +1020,7 @@ async function uploadPdf(file) {
     } catch (err) {
         showPdfStatus(`❌ ${err.message}`, "error");
     } finally {
+        clearInterval(latencyTimer);
         $("#pdf-file-input").value = "";
     }
 }
@@ -1021,6 +1061,7 @@ async function handleTopicSearch(e) {
     } catch (err) {
         resultsEl.innerHTML = `<div class="status-message error">❌ ${escapeHtml(err.message)}</div>`;
     } finally {
+        clearInterval(latencyTimer);
         setLoading(btn, false);
     }
 }
