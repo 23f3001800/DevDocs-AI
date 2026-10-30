@@ -1,3 +1,4 @@
+import asyncio
 import hmac
 import json
 import logging
@@ -109,8 +110,10 @@ async def lifespan(app: FastAPI):
     try:
         from app.retriever_instance import warm
 
-        warm()
-        log.info("Ready — all models pre-warmed.")
+        # Do not block health checks and frontend startup on model loading.
+        # The first retrieval waits on shared initialization if warm-up is still running.
+        asyncio.create_task(asyncio.to_thread(warm))
+        log.info("Model warm-up started in the background.")
     except Exception as e:  # noqa: BLE001 — deliberately broad; startup must not die
         log.warning("Pre-warm failed (%s); models will load on first request.", e)
     yield
@@ -359,6 +362,10 @@ async def ask(
                         _ttfts.append((time.perf_counter() - ask_started) * 1000)
                     collected.append(payload)
                     yield _sse("token", {"text": payload})
+                elif kind == "status":
+                    yield _sse("status", payload)
+                elif kind == "metrics":
+                    yield _sse("metrics", payload)
                 elif kind == "sources":
                     collected_sources = payload
                     if payload and not counted_citation:
