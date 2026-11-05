@@ -181,3 +181,22 @@ jobs:
           app-name: devdocs-ai
           images: ghcr.io/${{ steps.repo.outputs.name }}:sha-${{ github.sha }}
 
+      - name: Configure Azure container startup
+        if: steps.check.outputs.skip != 'true'
+        run: |
+          az webapp config appsettings set \
+            --name devdocs-ai \
+            --resource-group devdocs-ai-rg \
+            --settings \
+              PORT=8000 \
+              WEBSITES_PORT=8000 \
+              WEBSITES_CONTAINER_START_TIME_LIMIT=1800 \
+              RETRIEVER_WARMUP_ENABLED=false \
+            --output none
+          az webapp config set \
+            --name devdocs-ai \
+            --resource-group devdocs-ai-rg \
+            --always-on true \
+            --generic-configurations '{"healthCheckPath":"/health"}' \
+            --output none
+

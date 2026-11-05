@@ -38,7 +38,7 @@ from app.database import (
     record_source,
 )
 from app.security import SSRFError, resolve_public_ips
-from app.vectorstore import VectorStore, collection_count, get_cache_stats
+from app.vectorstore import VectorStore, get_cache_stats
 from scripts.ingest import ingest as run_ingest
 
 configure_logging()
@@ -106,16 +106,22 @@ async def lifespan(app: FastAPI):
     (models load lazily on first use); letting it escape the lifespan would
     crash-loop the container over a failed optimisation.
     """
-    log.info("Loading retrieval models...")
-    try:
+    if settings.retriever_warmup_enabled:
         from app.retriever_instance import warm
 
+        async def warm_safely():
+            try:
+                await asyncio.to_thread(warm)
+            except Exception as e:  # noqa: BLE001 — warm-up is best effort
+                log.warning("Pre-warm failed (%s); models will load on first query.", e)
+
         # Do not block health checks and frontend startup on model loading.
-        # The first retrieval waits on shared initialization if warm-up is still running.
-        asyncio.create_task(asyncio.to_thread(warm))
-        log.info("Model warm-up started in the background.")
-    except Exception as e:  # noqa: BLE001 — deliberately broad; startup must not die
-        log.warning("Pre-warm failed (%s); models will load on first request.", e)
+        # Keeping the exception inside the task also prevents the noisy
+        # "Task exception was never retrieved" failure mode.
+        asyncio.create_task(warm_safely())
+        log.info("Retriever warm-up started in the background.")
+    else:
+        log.info("Retriever warm-up disabled; models will load on the first document query.")
     yield
     log.info("Shutting down.")
 
@@ -747,9 +753,11 @@ async def metrics():
 # ── Public ops routes ────────────────────────────────────────
 @app.get("/health", tags=["ops"])
 def health():
-    # collection_count() deliberately avoids constructing a VectorStore, which
-    # would load the embedding model on a probe that runs every 30 seconds.
-    return {"status": "ok", "chunks_in_db": collection_count()}
+    # Health probes must stay independent of Chroma and mounted storage. Azure
+    # calls this endpoint repeatedly while the container is starting; opening
+    # a persistent collection here made a cheap liveness check block for tens
+    # of seconds and caused otherwise healthy containers to be recycled.
+    return {"status": "ok", "chunks_in_db": None, "storage_check": "deferred"}
 
 
 # ── Serve frontend static files ──────────────────────────────

@@ -26,6 +26,7 @@ def test_health():
     assert r.status_code == 200
     assert r.json()["status"] == "ok"
     assert "chunks_in_db" in r.json()
+    assert r.json()["storage_check"] == "deferred"
 
 
 # ── Anonymous session identity ───────────────────────────────

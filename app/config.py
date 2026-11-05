@@ -43,6 +43,11 @@ class Settings(BaseSettings):
     chroma_path: str = "./chroma_db"
     chroma_collection: str = "devdocs"
     embed_cache_max: int = Field(512, ge=0)
+    # Loading the embedder, BM25 corpus, and cross-encoder competes with the
+    # web server for CPU/memory during small App Service cold starts. Keep the
+    # frontend and health endpoint responsive; operators with enough capacity
+    # can opt back into eager warming.
+    retriever_warmup_enabled: bool = False
 
     # ── Retrieval knobs ──────────────────────────────────────
     retrieval_initial_k: int = Field(20, ge=1, le=200)

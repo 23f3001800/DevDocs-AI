@@ -79,11 +79,12 @@ USER appuser
 
 EXPOSE 8000
 
-# PORT is injected by Render/Railway; falls back to 8000 for local/Azure runs
+# Azure routes to WEBSITES_PORT; Render/Railway inject PORT. Prefer Azure's
+# explicit value, then PORT, then the local default.
 HEALTHCHECK --interval=30s --timeout=10s --retries=3 --start-period=40s \
-    CMD curl -f http://localhost:${PORT:-8000}/health || exit 1
+    CMD curl -f http://localhost:${WEBSITES_PORT:-${PORT:-8000}}/health || exit 1
 
 # --proxy-headers makes request.client.host reflect the real client behind a
 # load balancer. Pair it with TRUST_PROXY_HEADERS=true so rate limiting buckets
 # per user rather than per proxy.
-CMD uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000} --proxy-headers
+CMD uvicorn app.main:app --host 0.0.0.0 --port ${WEBSITES_PORT:-${PORT:-8000}} --proxy-headers
