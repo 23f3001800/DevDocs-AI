@@ -97,6 +97,9 @@ def run(cases: list[dict], k: int, retrieval_only: bool, use_ragas: bool, retrie
     answer_scores = {name: [] for name in ("keyword_coverage", "citation_coverage")}
     latencies = []
     failures = 0
+    hallucinations = 0
+    answerability = []
+    retrieval_cases = 0
     ragas_records = {"question": [], "contexts": [], "answer": [], "ground_truth": []}
 
     for case in cases:
@@ -107,13 +110,30 @@ def run(cases: list[dict], k: int, retrieval_only: bool, use_ragas: bool, retrie
             next((doc_id for doc_id in relevant_ids if doc_id in chunk["content"]), chunk["id"])
             for chunk in chunks
         ]
-        retrieval["recall_at_k"].append(calculate_recall_at_k(relevant_ids, retrieved_ids, k))
-        retrieval["precision_at_k"].append(calculate_precision_at_k(relevant_ids, retrieved_ids, k))
-        retrieval["mrr"].append(calculate_mrr(relevant_ids, retrieved_ids, k))
-        retrieval["hit_rate"].append(calculate_hit_rate(relevant_ids, retrieved_ids, k))
+        # An intentionally unanswerable case has no relevant IDs. Mixing its
+        # forced zero into positive-retrieval metrics makes Recall/Precision/
+        # MRR look worse while failing to measure the behavior we actually care
+        # about: abstention. Score it separately under answerability instead.
+        if relevant_ids:
+            retrieval_cases += 1
+            retrieval["recall_at_k"].append(calculate_recall_at_k(relevant_ids, retrieved_ids, k))
+            retrieval["precision_at_k"].append(
+                calculate_precision_at_k(relevant_ids, retrieved_ids, k)
+            )
+            retrieval["mrr"].append(calculate_mrr(relevant_ids, retrieved_ids, k))
+            retrieval["hit_rate"].append(calculate_hit_rate(relevant_ids, retrieved_ids, k))
 
         if not retrieval_only:
-            response = ask(case["question"], k=k)
+            # Generate from the same retrieval strategy being evaluated. The
+            # previous comparison path always re-retrieved with the global
+            # Hybrid+Reranking singleton, so its four generation rows did not
+            # actually compare four configurations.
+            response = ask(
+                case["question"],
+                k=k,
+                retriever=retriever,
+                retrieved_chunks=chunks,
+            )
             ragas_records["question"].append(case["question"])
             ragas_records["contexts"].append([chunk["content"] for chunk in chunks])
             ragas_records["answer"].append(response.answer)
@@ -122,16 +142,28 @@ def run(cases: list[dict], k: int, retrieval_only: bool, use_ragas: bool, retrie
                 calculate_keyword_coverage(response.answer, case["ground_truth_answer"])
             )
             answer_scores["citation_coverage"].append(
-                calculate_citation_coverage(response.answer, response.sources)
+                calculate_citation_coverage(
+                    response.answer,
+                    response.sources,
+                    has_answer=response.has_answer,
+                )
             )
-            failures += int(not response.has_answer)
+            expected_answer = bool(relevant_ids)
+            answerability.append(float(response.has_answer == expected_answer))
+            failures += int(expected_answer and not response.has_answer)
+            hallucinations += int(not expected_answer and response.has_answer)
         latencies.append((time.perf_counter() - started) * 1000)
 
     scores = {**retrieval, **answer_scores}
     results = {name: statistics.fmean(values) for name, values in scores.items() if values}
     results["avg_latency_ms"] = statistics.fmean(latencies)
     results["cases"] = len(cases)
+    results["retrieval_cases"] = retrieval_cases
+    results["unanswerable_cases"] = len(cases) - retrieval_cases
     results["answer_failures"] = failures
+    results["unsupported_answers"] = hallucinations
+    if answerability:
+        results["answerability_accuracy"] = statistics.fmean(answerability)
     if use_ragas:
         results.update(run_ragas(ragas_records))
     return results

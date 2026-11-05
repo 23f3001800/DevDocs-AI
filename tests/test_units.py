@@ -26,6 +26,7 @@ from app.llm_providers import GeminiProvider, LLMManager, LLMResponse, MockProvi
 from app.main import validate_ingest_source
 from app.models import RAGResponse
 from app.vectorstore import get_cache_stats
+from evals.metrics import calculate_citation_coverage
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -164,6 +165,13 @@ def test_ragresponse_confidence_bounds_enforced():
         RAGResponse(answer="x", sources=[], confidence=1.5, has_answer=True)
     with pytest.raises(ValidationError):
         RAGResponse(answer="x", sources=[], confidence=-0.1, has_answer=True)
+
+
+def test_citation_coverage_accepts_an_uncited_abstention():
+    assert calculate_citation_coverage(
+        "The answer is not in the knowledge base.", [], has_answer=False
+    ) == 1.0
+    assert calculate_citation_coverage("A supported answer", [], has_answer=True) == 0.0
 
 
 # ─────────────────────────────────────────────────────────────

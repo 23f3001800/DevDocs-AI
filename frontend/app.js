@@ -347,9 +347,10 @@ async function sendMessage() {
     let streamPhase = "Starting…";
     let streamMessage = "Preparing a response…";
     let firstTokenMs = null;
+    let showStreamStatus = true;
     const streamStartedAt = performance.now();
 
-    const statusMarkup = () => `<div class="stream-status" role="status" aria-live="polite"><span class="streaming-spinner"></span><span class="stream-phase">${escapeHtml(streamPhase)}</span><span class="stream-latency">${Math.round(performance.now() - streamStartedAt)} ms${firstTokenMs !== null ? ` · TTFT ${firstTokenMs} ms` : ""}</span></div><div class="stream-progress">${escapeHtml(streamMessage)}</div>`;
+    const statusMarkup = () => showStreamStatus ? `<div class="stream-status" role="status" aria-live="polite"><span class="streaming-spinner"></span><span class="stream-phase">${escapeHtml(streamPhase)}</span><span class="stream-latency">${Math.round(performance.now() - streamStartedAt)} ms${firstTokenMs !== null ? ` · TTFT ${firstTokenMs} ms` : ""}</span></div><div class="stream-progress">${escapeHtml(streamMessage)}</div>` : "";
     const latencyTimer = setInterval(() => {
         const latencyEl = msgEl.querySelector(".stream-latency");
         if (latencyEl) latencyEl.textContent = `${Math.round(performance.now() - streamStartedAt)} ms${firstTokenMs !== null ? ` · TTFT ${firstTokenMs} ms` : ""}`;
@@ -430,15 +431,14 @@ async function sendMessage() {
                     fullText += evt.data.text ?? "";
                     schedulePaint();
                 } else if (evt.event === "status") {
-                    streamPhase = evt.data.phase === "retrieving" ? "Searching" : "Composing";
+                    const phaseLabels = {
+                        retrieving: "Searching",
+                        thinking: "Thinking",
+                        composing: "Composing",
+                    };
+                    streamPhase = phaseLabels[evt.data.phase] || "Working";
                     streamMessage = evt.data.message || "Working…";
-                    const progressEl = msgEl.querySelector(".stream-progress");
-                    if (progressEl) progressEl.textContent = streamMessage;
-                } else if (evt.event === "status") {
-                    streamPhase = evt.data.phase === "retrieving" ? "Searching" : "Composing";
-                    streamMessage = evt.data.message || "Working…";
-                    const progressEl = msgEl.querySelector(".stream-progress");
-                    if (progressEl) progressEl.textContent = streamMessage;
+                    schedulePaint();
                 } else if (evt.event === "metrics") {
                     responseMetrics = evt.data || {};
                 } else if (evt.event === "sources") {
@@ -451,11 +451,7 @@ async function sendMessage() {
             }
         }
 
-        streamPhase = "Complete";
-        streamMessage = "Answer ready";
-        clearInterval(latencyTimer);
-        streamPhase = "Complete";
-        streamMessage = "Answer ready";
+        showStreamStatus = false;
         clearInterval(latencyTimer);
         paint(); // final synchronous render — never leave a queued frame unpainted
 
@@ -556,7 +552,15 @@ function renderResponseMetrics(msgEl, metrics) {
     const el = msgEl.querySelector(".response-metrics");
     if (!el) return;
     const item = (label, value) => `<span class="response-metric"><b>${escapeHtml(String(value ?? "—"))}</b><small>${label}</small></span>`;
-    el.innerHTML = item("Latency", `${metrics.latency_ms ?? "—"} ms`) + item("TTFT", `${metrics.ttft_ms ?? "—"} ms`) + item("Confidence", metrics.confidence == null ? "—" : `${Math.round(metrics.confidence * 100)}%`) + item("Citations", metrics.citation_count ?? 0);
+    const totalLatency = metrics.total_latency_ms ?? metrics.latency_ms ?? "—";
+    el.innerHTML =
+        item("Latency", `${totalLatency} ms`) +
+        item("TTFT", `${metrics.ttft_ms ?? "—"} ms`) +
+        item("Retrieval", `${metrics.retrieval_ms ?? "—"} ms`) +
+        item("Generation", `${metrics.generation_ms ?? "—"} ms`) +
+        item("Confidence", metrics.confidence == null ? "—" : `${Math.round(metrics.confidence * 100)}%`) +
+        item("Citations", metrics.citation_count ?? 0) +
+        item("Chunks", metrics.retrieved_chunks ?? "—");
     el.classList.remove("hidden");
 }
 

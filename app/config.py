@@ -47,6 +47,11 @@ class Settings(BaseSettings):
     # ── Retrieval knobs ──────────────────────────────────────
     retrieval_initial_k: int = Field(20, ge=1, le=200)
     rrf_k: int = Field(60, ge=1)
+    # Maximum cross-encoder relevance below this value is treated as weak
+    # retrieval. The chain then avoids citing unrelated chunks and lets the
+    # conversational model decide whether the message is a greeting/general
+    # question or a documentation question that is absent from the KB.
+    retrieval_min_relevance: float = Field(0.15, ge=0.0, le=1.0)
     chunk_size_code: int = Field(1200, ge=100)
     chunk_overlap_code: int = Field(100, ge=0)
     chunk_size_text: int = Field(600, ge=100)

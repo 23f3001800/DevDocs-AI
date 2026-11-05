@@ -19,6 +19,7 @@ takes ~200ms.
 import logging
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 from sentence_transformers import CrossEncoder
 
@@ -74,9 +75,18 @@ class HybridRetriever:
         t0 = time.time()
         initial_k = initial_k or self.default_initial_k
 
-        dense = self.vs.query(query, k=initial_k, owner=owner)
-        with self._bm25_lock:
-            sparse = self.bm25.search(query, k=initial_k, owner=owner)
+        # Dense search and BM25 are independent recall stages. Running them in
+        # parallel removes the slower one's companion from the critical path.
+        # BM25 keeps its lock because ingestion can replace the index in flight.
+        def sparse_search():
+            with self._bm25_lock:
+                return self.bm25.search(query, k=initial_k, owner=owner)
+
+        with ThreadPoolExecutor(max_workers=2, thread_name_prefix="retrieval") as pool:
+            dense_future = pool.submit(self.vs.query, query, initial_k, None, owner)
+            sparse_future = pool.submit(sparse_search)
+            dense = dense_future.result()
+            sparse = sparse_future.result()
 
         # ── Stage 2: RRF merge ───────────────────────────────
         # Keyed on chunk ID, not text: identical content (shared boilerplate)

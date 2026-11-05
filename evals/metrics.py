@@ -77,9 +77,16 @@ def calculate_keyword_coverage(answer: str, ground_truth: str) -> float:
     return len(expected & actual) / len(expected)
 
 
-def calculate_citation_coverage(answer: str, sources: Sequence[str]) -> float:
-    """Return one when the model provides sources for its answer in the structured output."""
-    has_answer = bool(answer.strip())
+def calculate_citation_coverage(
+    answer: str, sources: Sequence[str], has_answer: bool | None = None
+) -> float:
+    """Return one when citation behavior matches answerability.
+
+    An abstention normally contains explanatory text, so ``bool(answer)`` is
+    not enough to distinguish it from a supported answer. Callers with a
+    structured ``has_answer`` value should pass it explicitly.
+    """
+    has_answer = bool(answer.strip()) if has_answer is None else has_answer
     has_sources = len(sources) > 0
     if has_answer:
         return 1.0 if has_sources else 0.0

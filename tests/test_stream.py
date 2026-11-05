@@ -106,3 +106,66 @@ async def test_stream_raises_when_every_provider_fails_up_front():
     with pytest.raises(RuntimeError, match="All LLM providers failed"):
         async for _ in mgr.stream("s", "u"):
             pass
+
+
+# ── Retrieval confidence gate + streamed telemetry ──────────
+async def test_weak_retrieval_uses_uncited_conversational_fallback(monkeypatch):
+    from app import chain
+
+    weak_chunks = [
+        {
+            "id": "weak",
+            "content": "Unrelated reference material",
+            "metadata": {"file_path": "unrelated.md"},
+            "rerank_score": -10.0,
+        }
+    ]
+
+    class _Retriever:
+        def retrieve(self, *args, **kwargs):
+            return weak_chunks
+
+    async def fake_stream(*args, **kwargs):
+        yield "Good morning!"
+
+    monkeypatch.setattr(chain, "get_retriever", lambda: _Retriever())
+    monkeypatch.setattr(chain.llm_manager, "stream", fake_stream)
+
+    events = [event async for event in chain.ask_stream("Good morning", owner="owner")]
+    assert ("sources", []) in events
+    metrics = next(payload for kind, payload in events if kind == "metrics")
+    assert metrics["answer_mode"] == "conversational"
+    assert metrics["citation_count"] == 0
+    assert metrics["retrieved_chunks"] == 1
+    assert {"retrieval_ms", "generation_ms", "total_latency_ms"} <= metrics.keys()
+
+
+async def test_grounded_stream_reports_sources_and_stage_timings(monkeypatch):
+    from app import chain
+
+    strong_chunks = [
+        {
+            "id": "strong",
+            "content": "FastAPI uses dependency injection.",
+            "metadata": {"file_path": "dependencies.md"},
+            "rerank_score": 10.0,
+        }
+    ]
+
+    class _Retriever:
+        def retrieve(self, *args, **kwargs):
+            return strong_chunks
+
+    async def fake_stream(*args, **kwargs):
+        yield "A grounded answer."
+
+    monkeypatch.setattr(chain, "get_retriever", lambda: _Retriever())
+    monkeypatch.setattr(chain.llm_manager, "stream", fake_stream)
+
+    events = [event async for event in chain.ask_stream("How does DI work?", owner="owner")]
+    assert ("sources", ["dependencies.md"]) in events
+    metrics = next(payload for kind, payload in events if kind == "metrics")
+    assert metrics["answer_mode"] == "grounded"
+    assert metrics["confidence"] == pytest.approx(1.0)
+    assert metrics["citation_count"] == 1
+    assert metrics["retrieved_chunks"] == 1

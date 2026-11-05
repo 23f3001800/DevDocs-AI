@@ -146,6 +146,28 @@ def test_retrieve_empty_index_returns_empty():
     assert r.retrieve("anything", k=5) == []
 
 
+def test_dense_and_sparse_recall_run_in_parallel():
+    """Both independent recall stages must start before either is allowed to
+    finish. A sequential implementation breaks the barrier and fails."""
+    import threading
+
+    r = _build(DOCS, dense_hits=DOCS, rerank_scores={DOCS[0][1]: 1.0})
+    rendezvous = threading.Barrier(2, timeout=1)
+
+    def dense_query(text, k=5, file_type=None, owner=None):
+        rendezvous.wait()
+        return [{"id": "a", "content": DOCS[0][1], "metadata": DOCS[0][2], "score": 1.0}]
+
+    def sparse_search(text, k=5, owner=None):
+        rendezvous.wait()
+        return [{"id": "a", "content": DOCS[0][1], "metadata": DOCS[0][2], "score": 1.0}]
+
+    r.vs.query = dense_query
+    r.bm25.search = sparse_search
+
+    assert r.retrieve("FastAPI", k=1)[0]["id"] == "a"
+
+
 # ── The stale-BM25 regression ────────────────────────────────
 def test_rebuild_bm25_picks_up_newly_ingested_documents():
     """The bug: the BM25 index was built once in __init__ and never refreshed,

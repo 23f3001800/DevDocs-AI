@@ -57,7 +57,7 @@ Gemini is the only LLM provider. Without a server key the app falls back to a mo
 
 ## Evaluation
 
-All numbers below are **real, measured values** from our golden dataset of 20 questions against the FastAPI documentation (~23 500 chunks). Nothing is fabricated. A mediocre number with an explanation is stronger than an unexplained "98% accuracy."
+All numbers below are **real, measured values** from an isolated 13-document fixture and 20 golden questions (19 answerable, one intentionally unanswerable). The fixture excludes its test matrix and answer-key pages to prevent evaluation leakage.
 
 Run the evaluation yourself:
 ```bash
@@ -78,17 +78,18 @@ python -m evals.run_evals --compare --json
 
 We measure whether the retriever surfaces the right documents before the LLM ever sees them.
 
-| Configuration | Recall@5 | Hit Rate@5 | MRR | Latency (ms) |
-|---|---|---|---|---|
-| **Dense** (MiniLM) | 0.882 | 0.950 | 0.900 | 2,676 † |
-| **BM25** | 0.857 | 0.950 | 0.900 | 2,676 |
-| **Hybrid** (Dense + BM25 + RRF) | **0.893** | 0.950 | **0.917** | 2,838 |
-| **Hybrid + Reranking** | 0.855 | 0.950 | 0.892 | 5,724 |
+| Configuration | Recall@5 | Precision@5 | Hit Rate@5 | MRR | Warm Latency (ms) |
+|---|---:|---:|---:|---:|---:|
+| **Dense** (MiniLM) | 0.861 | 0.253 | 0.947 | **0.921** | **13** † |
+| **BM25** | 0.861 | 0.253 | 0.947 | 0.853 | 20 |
+| **Hybrid** (Dense + BM25 + RRF) | **0.887** | **0.263** | 0.947 | 0.912 | 17 |
+| **Hybrid + Reranking** | 0.861 | 0.253 | 0.947 | **0.921** | 360 |
 
-- **Recall@5** — fraction of ground-truth documents found in the top 5 results. Hybrid's RRF fusion gives the best recall (0.893) by combining signals from both retrievers.
-- **Hit Rate@5** — did *any* relevant document appear? 0.950 across the board (19/20 questions hit).
-- **MRR** — reciprocal rank of the first correct result. Hybrid (0.917) ranks the right document highest on average.
-- **Why Hybrid+Rerank has lower recall than plain Hybrid** — the cross-encoder reranker aggressively re-scores and can push borderline-relevant documents below the top-5 cutoff. It trades recall for *precision*: the documents it does return are higher quality (see Keyword Coverage below).
+- **Recall@5** — fraction of ground-truth documents found in the top 5 results. Hybrid's RRF fusion gives the best recall (0.887) by combining signals from both retrievers.
+- **Precision@5** — intentionally modest because most questions have only one or two relevant documents but the system returns five results. It should be interpreted beside Recall, Hit Rate, and MRR rather than optimized in isolation.
+- **Hit Rate@5** — did *any* relevant document appear? 0.947 means 18 of the 19 answerable questions hit; the unanswerable case is scored separately.
+- **MRR** — reciprocal rank of the first correct result. Dense and Hybrid+Reranking both score 0.921.
+- **Why Hybrid+Rerank has lower recall than plain Hybrid** — the cross-encoder can push a borderline-relevant document below the top-5 cutoff. On this small fixture it improves first-result rank, but does not improve Precision@5 and adds substantial latency.
 
 †*Dense latency excludes the first-run cold-start (model loading, API init). Steady-state latency is comparable to BM25.*
 
@@ -96,14 +97,28 @@ We measure whether the retriever surfaces the right documents before the LLM eve
 
 We measure whether the LLM's answer is actually grounded in the retrieved context — not hallucinated.
 
-| Configuration | Keyword Coverage | Citation Coverage | Answer Failures |
-|---|---|---|---|
-| **Dense** | 0.918 | 1.000 | 0 / 20 |
-| **BM25** | 0.906 | 1.000 | 0 / 20 |
-| **Hybrid** | 0.897 | 1.000 | 0 / 20 |
-| **Hybrid + Reranking** | **0.932** | 1.000 | 0 / 20 |
+| Configuration | Keyword Coverage | Citation Coverage | Answerability | False Abstentions | Unsupported Answers |
+|---|---:|---:|---:|---:|---:|
+| **Dense** | **0.546** | 1.000 | 1.000 | 0 / 19 | 0 / 1 |
+| **BM25** | 0.486 | 1.000 | 1.000 | 0 / 19 | 0 / 1 |
+| **Hybrid** | 0.517 | 1.000 | 1.000 | 0 / 19 | 0 / 1 |
+| **Hybrid + Reranking** | 0.532 | 1.000 | 1.000 | 0 / 19 | 0 / 1 |
 
-- **Keyword Coverage** — what fraction of key concepts from the ground-truth answer appear in the LLM's response. Hybrid+Reranking scores highest (0.932) because the reranker feeds the LLM the most relevant chunks, so it covers more of the expected answer.
+### Retrieval Choice Ablation
+
+| Experiment | Candidate K | Final K | Chunk / overlap | Recall@K | Precision@K | MRR | Latency (ms) |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| Smaller context | 10 | 3 | 600 / 60 | 0.824 | **0.386** | 0.921 | 259 |
+| **Recommended balance** | **10** | **5** | **600 / 60** | 0.861 | 0.253 | 0.921 | **269** |
+| Current candidate depth | 20 | 5 | 600 / 60 | 0.861 | 0.253 | 0.921 | 298 |
+| Recall-focused | 20 | 8 | 600 / 60 | **0.937** | 0.184 | **0.929** | 305 |
+| Excess candidates | 40 | 5 | 600 / 60 | 0.861 | 0.253 | 0.921 | 318 |
+| Small chunks, no overlap | 10 | 5 | 400 / 0 | 0.861 | **0.266** | 0.921 | **213** |
+| Small chunks | 10 | 5 | 400 / 40 | 0.861 | **0.266** | 0.921 | 215 |
+| **Current text chunks** | **10** | **5** | **600 / 60** | 0.861 | 0.253 | 0.921 | 280 |
+| Large chunks | 10 | 5 | 800 / 80 | 0.861 | 0.253 | 0.921 | 282 |
+
+- **Keyword Coverage** — what fraction of key concepts from the ground-truth answer appear in the LLM's response. Dense scored highest (0.546); reranking was close at 0.532.
 - **Citation Coverage** — does the LLM cite its sources in the structured JSON output? 1.000 = the model always returns source file paths alongside its answer. This is enforced by the strict JSON prompt format in `chain.py`.
 - **Answer Failures** — cases where the LLM set `has_answer=false`. Zero failures across all configurations.
 - **RAGAS faithfulness / answer relevancy** — supported via `--ragas` flag (requires LLM-as-judge calls). Not included in the table above because the free-tier quota is too low for reliable batch evaluation. When API budget permits, run `python -m evals.run_evals --ragas`.
@@ -112,7 +127,7 @@ We measure whether the LLM's answer is actually grounded in the retrieved contex
 
 | Metric | Value | Notes |
 |---|---|---|
-| **End-to-end latency** | 2,838 – 5,724 ms | Hybrid is ~2.8s; reranking adds ~3s |
+| **End-to-end latency** | 1,495 – 1,694 ms | Clean fixture via OpenRouter; reranking adds ~200ms |
 | **TTFT (time-to-first-token)** | ~300 ms (warm) | Via SSE streaming; measured with `--ttft` flag |
 | **TTFT (cold / rate-limited)** | 40–55 s | When Gemini quota is exhausted and the OpenRouter fallback activates, the Gemini SDK retry-sleep dominates TTFT |
 
