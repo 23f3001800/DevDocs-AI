@@ -57,7 +57,7 @@ Gemini is the only LLM provider. Without a server key the app falls back to a mo
 
 ## Evaluation
 
-All numbers below are **real, measured values** from an isolated 13-document fixture and 20 golden questions (19 answerable, one intentionally unanswerable). The fixture excludes its test matrix and answer-key pages to prevent evaluation leakage.
+All retrieval numbers below are **real, measured values** from an isolated 13-document fixture and the robust 25-question golden set (23 answerable, two intentionally unanswerable). The 20-question core set is also retained for regression comparison. The fixture excludes its test matrix and answer-key pages to prevent evaluation leakage.
 
 Run the evaluation yourself:
 ```bash
@@ -72,6 +72,12 @@ python -m evals.run_evals --ttft --ttft-runs 3
 
 # JSON output for CI pipelines
 python -m evals.run_evals --compare --json
+
+# Clean, isolated retrieval ablation: robust 20-question core
+python -m evals.run_ablation --dataset data/eval_dataset.json
+
+# Clean, isolated retrieval ablation: 25-question extended set
+python -m evals.run_ablation --dataset data/eval_dataset_25.json
 ```
 
 ### Retrieval Quality
@@ -80,20 +86,21 @@ We measure whether the retriever surfaces the right documents before the LLM eve
 
 | Configuration | Recall@5 | Precision@5 | Hit Rate@5 | MRR | Warm Latency (ms) |
 |---|---:|---:|---:|---:|---:|
-| **Dense** (MiniLM) | 0.861 | 0.253 | 0.947 | **0.921** | **13** † |
-| **BM25** | 0.861 | 0.253 | 0.947 | 0.853 | 20 |
-| **Hybrid** (Dense + BM25 + RRF) | **0.887** | **0.263** | 0.947 | 0.912 | 17 |
-| **Hybrid + Reranking** | 0.861 | 0.253 | 0.947 | **0.921** | 360 |
+| **Dense** (MiniLM) | 0.885 | 0.252 | 0.957 | **0.957** | 31 † |
+| **BM25** | **0.928** | **0.270** | **1.000** | 0.900 | 24 |
+| **Hybrid** (Dense + BM25 + RRF) | **0.928** | **0.270** | **1.000** | 0.936 | **21** |
+| **Hybrid + Reranking** | **0.928** | **0.270** | **1.000** | **0.957** | 483 |
 
-- **Recall@5** — fraction of ground-truth documents found in the top 5 results. Hybrid's RRF fusion gives the best recall (0.887) by combining signals from both retrievers.
-- **Precision@5** — intentionally modest because most questions have only one or two relevant documents but the system returns five results. It should be interpreted beside Recall, Hit Rate, and MRR rather than optimized in isolation.
-- **Hit Rate@5** — did *any* relevant document appear? 0.947 means 18 of the 19 answerable questions hit; the unanswerable case is scored separately.
-- **MRR** — reciprocal rank of the first correct result. Dense and Hybrid+Reranking both score 0.921.
-- **Why Hybrid+Rerank has lower recall than plain Hybrid** — the cross-encoder can push a borderline-relevant document below the top-5 cutoff. On this small fixture it improves first-result rank, but does not improve Precision@5 and adds substantial latency.
+- **Recall@5** — fraction of ground-truth documents found in the top 5 results. BM25 and both hybrid variants find 0.928 of the required documents on the extended set.
+- **Precision@5** — intentionally modest because most questions have only one or two relevant documents but the system returns five results. The corrected metric always divides by the requested `K`; duplicate chunks no longer shrink the denominator and inflate precision.
+- **Hit Rate@5** — did *any* relevant document appear? Both hybrid variants hit all 23 answerable questions; the two unanswerable cases are scored separately.
+- **MRR** — reciprocal rank of the first correct result. Reranking raises Hybrid from 0.936 to 0.957, but adds about 462 ms on this CPU run.
 
 †*Dense latency excludes the first-run cold-start (model loading, API init). Steady-state latency is comparable to BM25.*
 
-### Generation Quality (Grounding)
+### Generation Quality (Grounding — LLM-backed baseline)
+
+These values are the last LLM-backed 20-case baseline. They are intentionally not presented as results from the new 25-case retrieval-only run: rerunning generation requires a configured provider key and 100 model calls for the four-strategy comparison.
 
 We measure whether the LLM's answer is actually grounded in the retrieved context — not hallucinated.
 
@@ -108,15 +115,56 @@ We measure whether the LLM's answer is actually grounded in the retrieved contex
 
 | Experiment | Candidate K | Final K | Chunk / overlap | Recall@K | Precision@K | MRR | Latency (ms) |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| Smaller context | 10 | 3 | 600 / 60 | 0.824 | **0.386** | 0.921 | 259 |
-| **Recommended balance** | **10** | **5** | **600 / 60** | 0.861 | 0.253 | 0.921 | **269** |
-| Current candidate depth | 20 | 5 | 600 / 60 | 0.861 | 0.253 | 0.921 | 298 |
-| Recall-focused | 20 | 8 | 600 / 60 | **0.937** | 0.184 | **0.929** | 305 |
-| Excess candidates | 40 | 5 | 600 / 60 | 0.861 | 0.253 | 0.921 | 318 |
-| Small chunks, no overlap | 10 | 5 | 400 / 0 | 0.861 | **0.266** | 0.921 | **213** |
-| Small chunks | 10 | 5 | 400 / 40 | 0.861 | **0.266** | 0.921 | 215 |
-| **Current text chunks** | **10** | **5** | **600 / 60** | 0.861 | 0.253 | 0.921 | 280 |
-| Large chunks | 10 | 5 | 800 / 80 | 0.861 | 0.253 | 0.921 | 282 |
+| Fast, narrow context | 3 | 3 | 600 / 60 | 0.885 | **0.420** | 0.913 | **200** |
+| Shallow candidates | 3 | 5 | 600 / 60 | **0.928** | 0.270 | 0.922 | 180 |
+| Moderate candidates | 5 | 5 | 600 / 60 | 0.907 | 0.261 | 0.913 | 297 |
+| **Recommended fixture balance** | **8** | **5** | **600 / 60** | **0.928** | **0.270** | **0.957** | 425 |
+| Full fixture depth | 13 | 5 | 600 / 60 | **0.928** | **0.270** | **0.957** | 688 |
+| Recall-focused | 13 | 8 | 600 / 60 | **0.948** | 0.179 | **0.957** | 600 |
+| Very small chunks | 10 | 5 | 128 / 0 | 0.822 | 0.235 | 0.891 | 381 |
+| Small chunks | 10 | 5 | 256 / 0 | 0.863 | 0.252 | 0.935 | 465 |
+| Small chunks + overlap | 10 | 5 | 256 / 64 | 0.863 | 0.252 | 0.935 | 540 |
+| **Recommended text chunks** | **10** | **5** | **400 / 40** | **0.928** | **0.270** | **0.957** | 456 |
+| Current production chunks | 10 | 5 | 600 / 60 | **0.928** | **0.270** | **0.957** | **449** |
+
+The old candidate depths 20 and 40 were identical because the fixture has only 13 documents; both exhausted the corpus. The old 600 and 800 character chunk variants were also effectively identical because every fixture document is at most 530 characters. The corrected ranges cross actual corpus boundaries. The 256/0 and 256/64 rows still match because the recursive splitter produced the same 25 chunks for both settings; in this fixture, overlap changed neither chunk membership nor ranking.
+
+### Dataset Robustness Check
+
+| Dataset | Questions | Answerable / Unanswerable | Hybrid + Rerank Recall@5 | Precision@5 | Hit Rate@5 | MRR |
+|---|---:|---:|---:|---:|---:|---:|
+| Core | 20 | 19 / 1 | 0.913 | 0.274 | 1.000 | 0.947 |
+| Extended | 25 | 23 / 2 | **0.928** | 0.270 | 1.000 | **0.957** |
+
+### Golden Questions
+
+Questions 1–20 form the core set; questions 21–25 extend it with less frequent details, cross-document failure behavior, and another abstention case.
+
+1. Name the exact sentence-transformers checkpoint used to turn documentation chunks and queries into dense vectors.
+2. After vectorization, where are persisted chunk embeddings stored?
+3. Which metadata fields are required on every fixture chunk?
+4. Why can literal-only and meaning-only retrieval each miss useful developer documentation?
+5. How are incompatible lexical and vector scores combined without raw-score normalization?
+6. Which two ranking stages run after candidate retrieval and before answer generation?
+7. Describe the complete query path from validation to a cited answer.
+8. What must complete before an uploaded document is ready for retrieval?
+9. How should retrieval scope a question explicitly limited to `docs/api.md`?
+10. Which measure detects unsupported claims in an otherwise plausible answer?
+11. Which dimension fails when required reference evidence was never retrieved?
+12. What happens when embedding persistence fails during ingestion?
+13. Which cloud provider and region host production according to the fixture?
+14. Should prompt-like instructions inside a retrieved README be followed?
+15. Which branch best handles exact API paths, error strings, and identifiers?
+16. Which component matches paraphrases such as “persist credentials” and “saving API keys”?
+17. How should explicit `v1` scoping behave when multiple versions are indexed?
+18. Why retain ground-truth document IDs when answer-level evaluation exists?
+19. What should happen when retrieval fails and trustworthy context is unavailable?
+20. How can an answer trace a chunk back to its original document?
+21. What happens when one document ranks highly in both lexical and semantic search?
+22. Which artifacts must be preserved after an evaluation failure for debugging?
+23. Which version is preferred when no version is requested, and what citation metadata remains?
+24. How should malformed input and retrieval/generation outages stop differently?
+25. What is the document-retention and automatic embedding-deletion period?
 
 - **Keyword Coverage** — what fraction of key concepts from the ground-truth answer appear in the LLM's response. Dense scored highest (0.546); reranking was close at 0.532.
 - **Citation Coverage** — does the LLM cite its sources in the structured JSON output? 1.000 = the model always returns source file paths alongside its answer. This is enforced by the strict JSON prompt format in `chain.py`.

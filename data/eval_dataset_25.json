@@ -1,0 +1,50 @@
+{
+  "extends": "eval_dataset.json",
+  "cases": [
+    {
+      "case_id": "TC-21",
+      "test_type": "fusion_consensus_boost",
+      "difficulty": "hard",
+      "question": "If the same document ranks near the top in both lexical and semantic search, what happens to its fused ranking and why?",
+      "ground_truth_doc_ids": ["doc_fusion_06"],
+      "ground_truth_answer": "RRF gives the document a stronger fused score because it receives reciprocal-rank contributions from both ranked lists.",
+      "why_it_matters": "Tests a second, less frequently queried RRF property and discriminates retrieval of the complete ranking document."
+    },
+    {
+      "case_id": "TC-22",
+      "test_type": "evaluation_debugging",
+      "difficulty": "hard",
+      "question": "An offline evaluation crashes halfway through. Which artifacts must be retained so an engineer can reproduce and diagnose that individual failure?",
+      "ground_truth_doc_ids": ["doc_failure_10"],
+      "ground_truth_answer": "Preserve the question, retrieved IDs, retrieved contexts, model response, and error metadata.",
+      "why_it_matters": "Targets a low-frequency detail near the end of the failure-handling document."
+    },
+    {
+      "case_id": "TC-23",
+      "test_type": "default_version_policy",
+      "difficulty": "hard",
+      "question": "No version is mentioned in the query, but several documentation versions are indexed. Which version should be preferred and what citation information must remain available?",
+      "ground_truth_doc_ids": ["doc_versioning_13"],
+      "ground_truth_answer": "Prefer the latest indexed version and retain version metadata in citations.",
+      "why_it_matters": "Complements the explicit-version case with the opposite branch of the policy."
+    },
+    {
+      "case_id": "TC-24",
+      "test_type": "api_failure_boundary",
+      "difficulty": "hard",
+      "question": "Contrast malformed input with a retrieval or generation outage: where should each stop, and may either return an invented answer?",
+      "ground_truth_doc_ids": ["doc_api_08", "doc_failure_10"],
+      "ground_truth_answer": "Validation errors stop before retrieval. Retrieval or generation failures return an explicit error, and neither path may fabricate an answer.",
+      "why_it_matters": "Requires synthesis across API validation and operational failure handling."
+    },
+    {
+      "case_id": "TC-25",
+      "test_type": "unanswerable_abstention",
+      "difficulty": "hard",
+      "question": "What is the configured document-retention period, and after how many days are embeddings automatically deleted?",
+      "ground_truth_doc_ids": [],
+      "ground_truth_answer": "The indexed evaluation corpus does not specify a retention period or automatic embedding deletion schedule.",
+      "why_it_matters": "Adds a plausible operational question whose answer is absent, reducing overfitting to a single unanswerable case."
+    }
+  ]
+}

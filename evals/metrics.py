@@ -21,9 +21,15 @@ def calculate_recall_at_k(
 def calculate_precision_at_k(
     relevant_ids: set[str], retrieved_ids: Sequence[str], k: int = 3
 ) -> float:
-    """Return the fraction of unique first-*k* results that are relevant."""
+    """Return document-level precision at the requested cutoff.
+
+    Duplicate chunks from one document must not improve precision, and the
+    denominator must remain the requested cutoff.  The previous implementation
+    divided by the number of unique results, which made a five-result run look
+    artificially precise whenever several chunks came from the same document.
+    """
     top_k = _unique(retrieved_ids[:k]) if k > 0 else []
-    return sum(doc_id in relevant_ids for doc_id in top_k) / len(top_k) if top_k else 0.0
+    return sum(doc_id in relevant_ids for doc_id in top_k) / k if top_k else 0.0
 
 
 def calculate_mrr(relevant_ids: set[str], retrieved_ids: Sequence[str], k: int = 5) -> float:

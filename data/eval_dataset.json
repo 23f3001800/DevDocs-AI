@@ -3,7 +3,7 @@
     "case_id": "TC-01",
     "test_type": "single_doc_exact_fact",
     "difficulty": "easy",
-    "question": "Which embedding model does DevDocs-AI use for semantic retrieval?",
+    "question": "Name the exact sentence-transformers checkpoint used to turn both documentation chunks and user queries into dense vectors.",
     "ground_truth_doc_ids": [
       "doc_embeddings_03"
     ],
@@ -14,7 +14,7 @@
     "case_id": "TC-02",
     "test_type": "single_doc_exact_fact",
     "difficulty": "easy",
-    "question": "Which vector database stores the chunk embeddings?",
+    "question": "After vectorization, where are persisted chunk embeddings stored? Give the database name.",
     "ground_truth_doc_ids": [
       "doc_vector_04"
     ],
@@ -36,7 +36,7 @@
     "case_id": "TC-04",
     "test_type": "retriever_comparison",
     "difficulty": "medium",
-    "question": "Why does DevDocs-AI use both BM25 and semantic retrieval?",
+    "question": "Why would searching only literal identifiers miss some useful documentation, while searching only by meaning could mishandle exact API paths?",
     "ground_truth_doc_ids": [
       "doc_retrieval_05"
     ],
@@ -47,7 +47,7 @@
     "case_id": "TC-05",
     "test_type": "ranking_concept",
     "difficulty": "medium",
-    "question": "What problem does Reciprocal Rank Fusion solve in the retrieval pipeline?",
+    "question": "Lexical scores and cosine-style vector scores are on incompatible scales. How does the ranking pipeline combine them without normalizing those raw scores?",
     "ground_truth_doc_ids": [
       "doc_fusion_06"
     ],
@@ -58,7 +58,7 @@
     "case_id": "TC-06",
     "test_type": "multi_doc_pipeline_order",
     "difficulty": "medium",
-    "question": "What happens after BM25 and semantic retrieval return candidates and before contexts are sent to the LLM?",
+    "question": "Two ranked candidate lists have already been produced. Describe the two ranking stages that occur before any context reaches answer generation.",
     "ground_truth_doc_ids": [
       "doc_fusion_06",
       "doc_rerank_07"
@@ -110,7 +110,7 @@
     "case_id": "TC-10",
     "test_type": "ragas_metric_definition",
     "difficulty": "easy",
-    "question": "Which RAGAS metric checks whether the answer is supported by the retrieved contexts?",
+    "question": "Which evaluation measure detects claims that are not supported by the supplied contexts, even when the response sounds plausible?",
     "ground_truth_doc_ids": [
       "doc_eval_09"
     ],
@@ -121,7 +121,7 @@
     "case_id": "TC-11",
     "test_type": "ragas_metric_diagnosis",
     "difficulty": "medium",
-    "question": "A generated answer is well written but the needed reference chunk was never retrieved. Which evaluation dimension should expose this retrieval failure?",
+    "question": "The generator behaves correctly, but the evidence needed for the reference answer never appears in its context window. Which evaluation dimension should fail?",
     "ground_truth_doc_ids": [
       "doc_eval_09"
     ],
@@ -144,7 +144,7 @@
     "case_id": "TC-13",
     "test_type": "unanswerable_abstention",
     "difficulty": "medium",
-    "question": "Which cloud provider hosts the production DevDocs-AI deployment?",
+    "question": "According to this indexed fixture, which cloud provider and region host production?",
     "ground_truth_doc_ids": [],
     "ground_truth_answer": "The indexed evaluation corpus does not specify a production cloud provider.",
     "why_it_matters": "Tests hallucination resistance and correct abstention when evidence is absent."
@@ -164,7 +164,7 @@
     "case_id": "TC-15",
     "test_type": "lexical_strength",
     "difficulty": "medium",
-    "question": "Why can BM25 be especially useful when the query contains an exact function name, error string, or API path?",
+    "question": "A query contains `/v1/search`, `NullReferenceError`, and an exact function identifier. Which retrieval branch is best suited to these tokens, and why?",
     "ground_truth_doc_ids": [
       "doc_retrieval_05"
     ],
@@ -175,7 +175,7 @@
     "case_id": "TC-16",
     "test_type": "semantic_strength",
     "difficulty": "medium",
-    "question": "A user asks \"How does the system find conceptually similar documentation when wording is different?\" Which retrieval component addresses that?",
+    "question": "The documentation says 'persist credentials' but the user asks about 'saving API keys'. What component is intended to match this paraphrase?",
     "ground_truth_doc_ids": [
       "doc_embeddings_03",
       "doc_retrieval_05"

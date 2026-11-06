@@ -3,14 +3,12 @@
 import argparse
 import asyncio
 import json
+import re
 import statistics
 import sys
 import time
 from pathlib import Path
 
-from app.chain import ask
-from app.llm_providers import llm_manager
-from app.retriever_instance import get_retriever
 from evals.metrics import (
     calculate_citation_coverage,
     calculate_hit_rate,
@@ -22,6 +20,7 @@ from evals.metrics import (
 )
 
 ROOT = Path(__file__).resolve().parents[1]
+DOC_ID = re.compile(r"\bdoc_[a-z]+_\d{2}\b")
 
 
 # ── RAGAS LLM-judge integration ─────────────────────────────────────────────
@@ -35,6 +34,7 @@ def run_ragas(records: dict[str, list]) -> dict[str, float]:
     from ragas.llms.base import BaseRagasLLM
     from ragas.metrics import answer_relevancy, faithfulness
 
+    from app.llm_providers import llm_manager
     from app.vectorstore import VectorStore
 
     class PipelineJudge(BaseRagasLLM):
@@ -78,20 +78,55 @@ def run_ragas(records: dict[str, list]) -> dict[str, float]:
 def load_cases(path: Path) -> list[dict]:
     with path.open(encoding="utf-8") as file:
         cases = json.load(file)
+    if isinstance(cases, dict) and "extends" in cases:
+        base_path = (path.parent / cases["extends"]).resolve()
+        extension = cases.get("cases", [])
+        if base_path == path.resolve():
+            raise ValueError(f"Evaluation dataset cannot extend itself: {path}")
+        cases = [*load_cases(base_path), *extension]
     if not isinstance(cases, list) or not cases:
         raise ValueError(f"Evaluation dataset must contain a non-empty JSON list: {path}")
     required = {"question", "ground_truth_doc_ids", "ground_truth_answer"}
+    seen_case_ids = set()
     for index, case in enumerate(cases):
         missing = required - case.keys()
         if missing:
             raise ValueError(f"Case {index} is missing: {', '.join(sorted(missing))}")
+        case_id = case.get("case_id")
+        if not case_id or case_id in seen_case_ids:
+            raise ValueError(f"Case {index} has a missing or duplicate case_id: {case_id!r}")
+        seen_case_ids.add(case_id)
     return cases
+
+
+def _retrieved_doc_id(chunk: dict) -> str:
+    """Resolve corpus identity independently from the expected answer.
+
+    Clean in-memory fixtures carry ``metadata.doc_id``.  The regex fallback is
+    retained for older persisted fixtures, but searches all corpus IDs rather
+    than only the expected IDs.  That prevents an irrelevant result from being
+    mislabeled merely because the evaluator already knows the answer key.
+    """
+    metadata = chunk.get("metadata") or {}
+    if metadata.get("doc_id"):
+        return str(metadata["doc_id"])
+    match = DOC_ID.search(chunk.get("content", ""))
+    return match.group(0) if match else str(chunk.get("id", "unknown"))
 
 
 # ── Core evaluation runner ───────────────────────────────────────────────────
 
-def run(cases: list[dict], k: int, retrieval_only: bool, use_ragas: bool, retriever=None) -> dict[str, float | int]:
+def run(
+    cases: list[dict],
+    k: int,
+    retrieval_only: bool,
+    use_ragas: bool,
+    retriever=None,
+    include_case_results: bool = False,
+) -> dict[str, float | int | list[dict]]:
     if retriever is None:
+        from app.retriever_instance import get_retriever
+
         retriever = get_retriever()
     retrieval = {name: [] for name in ("recall_at_k", "precision_at_k", "mrr", "hit_rate")}
     answer_scores = {name: [] for name in ("keyword_coverage", "citation_coverage")}
@@ -101,15 +136,13 @@ def run(cases: list[dict], k: int, retrieval_only: bool, use_ragas: bool, retrie
     answerability = []
     retrieval_cases = 0
     ragas_records = {"question": [], "contexts": [], "answer": [], "ground_truth": []}
+    case_results = []
 
     for case in cases:
         started = time.perf_counter()
         chunks = retriever.retrieve(case["question"], k=k)
         relevant_ids = set(case["ground_truth_doc_ids"])
-        retrieved_ids = [
-            next((doc_id for doc_id in relevant_ids if doc_id in chunk["content"]), chunk["id"])
-            for chunk in chunks
-        ]
+        retrieved_ids = [_retrieved_doc_id(chunk) for chunk in chunks]
         # An intentionally unanswerable case has no relevant IDs. Mixing its
         # forced zero into positive-retrieval metrics makes Recall/Precision/
         # MRR look worse while failing to measure the behavior we actually care
@@ -122,8 +155,20 @@ def run(cases: list[dict], k: int, retrieval_only: bool, use_ragas: bool, retrie
             )
             retrieval["mrr"].append(calculate_mrr(relevant_ids, retrieved_ids, k))
             retrieval["hit_rate"].append(calculate_hit_rate(relevant_ids, retrieved_ids, k))
+            case_results.append(
+                {
+                    "case_id": case["case_id"],
+                    "relevant_ids": sorted(relevant_ids),
+                    "retrieved_ids": retrieved_ids[:k],
+                    "recall_at_k": retrieval["recall_at_k"][-1],
+                    "precision_at_k": retrieval["precision_at_k"][-1],
+                    "mrr": retrieval["mrr"][-1],
+                }
+            )
 
         if not retrieval_only:
+            from app.chain import ask
+
             # Generate from the same retrieval strategy being evaluated. The
             # previous comparison path always re-retrieved with the global
             # Hybrid+Reranking singleton, so its four generation rows did not
@@ -166,6 +211,8 @@ def run(cases: list[dict], k: int, retrieval_only: bool, use_ragas: bool, retrie
         results["answerability_accuracy"] = statistics.fmean(answerability)
     if use_ragas:
         results.update(run_ragas(ragas_records))
+    if include_case_results:
+        results["case_results"] = case_results
     return results
 
 

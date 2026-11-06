@@ -16,6 +16,7 @@ chroma_db/chroma_db/
 data/*
 !data/devdocs_ragas_eval_test_cases.pdf
 !data/eval_dataset.json
+!data/eval_dataset_25.json
 
 # Coverage
 .coverage

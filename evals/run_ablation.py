@@ -14,13 +14,27 @@ from pathlib import Path
 import numpy as np
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from pypdf import PdfReader
+from sentence_transformers import CrossEncoder, SentenceTransformer
 
 from app.bm25_retriever import BM25Retriever
-from app.retriever_instance import get_retriever
+from app.config import get_settings
 from evals.run_evals import load_cases, run
 
 ROOT = Path(__file__).resolve().parents[1]
 DOC_HEADER = re.compile(r"(?m)^(doc_[a-z]+_\d{2}) ([^\n]+)\n")
+_EMBEDDER = None
+_RERANKER = None
+
+
+def _models():
+    """Load each CPU model once for the complete ablation matrix."""
+    global _EMBEDDER, _RERANKER
+    settings = get_settings()
+    if _EMBEDDER is None:
+        _EMBEDDER = SentenceTransformer(settings.embedding_model)
+    if _RERANKER is None:
+        _RERANKER = CrossEncoder(settings.reranker_model)
+    return _EMBEDDER, _RERANKER
 
 
 def load_fixture_corpus(path: Path) -> list[tuple[str, str, str]]:
@@ -54,11 +68,9 @@ class InMemoryHybridRetriever:
         initial_k: int = 10,
         mode: str = "rerank",
     ):
-        shared = get_retriever()
-        self.embedder = shared.vs.embedder
-        self.reranker = shared.reranker
+        self.embedder, self.reranker = _models()
         self.initial_k = initial_k
-        self.rrf_k = shared.k_rrf
+        self.rrf_k = get_settings().rrf_k
         self.mode = mode
 
         splitter = RecursiveCharacterTextSplitter(
@@ -145,6 +157,11 @@ def main() -> int:
         action="store_true",
         help="Also call the configured LLM for the clean four-strategy comparison",
     )
+    parser.add_argument(
+        "--diagnostics",
+        action="store_true",
+        help="Include per-question retrieved IDs and metric contributions in JSON output",
+    )
     args = parser.parse_args()
 
     documents = load_fixture_corpus(args.pdf)
@@ -165,7 +182,9 @@ def main() -> int:
             retriever=retriever,
         )
 
-    for initial_k, final_k in ((10, 3), (10, 5), (20, 5), (20, 8), (40, 5)):
+    # The fixture contains 13 documents. Candidate depths of 20 and 40 both
+    # exhaust it and therefore cannot measure candidate-depth sensitivity.
+    for initial_k, final_k in ((3, 3), (3, 5), (5, 5), (8, 5), (13, 5), (13, 8)):
         name = f"candidate_{initial_k}_top_{final_k}"
         retriever = InMemoryHybridRetriever(
             documents,
@@ -180,9 +199,13 @@ def main() -> int:
             retrieval_only=True,
             use_ragas=False,
             retriever=retriever,
+            include_case_results=args.diagnostics,
         )
 
-    variants = [(400, 0), (400, 40), (600, 0), (600, 60), (800, 80)]
+    # All fixture documents are <=530 characters, so 600 and 800 previously
+    # created the same one-chunk-per-document index. These cutoffs cross real
+    # document lengths and make overlap/chunk-size effects observable.
+    variants = [(128, 0), (256, 0), (256, 64), (400, 40), (600, 60)]
     for chunk_size, overlap in variants:
         name = f"chunk_{chunk_size}_overlap_{overlap}"
         retriever = InMemoryHybridRetriever(documents, chunk_size, overlap)
@@ -192,6 +215,7 @@ def main() -> int:
             retrieval_only=True,
             use_ragas=False,
             retriever=retriever,
+            include_case_results=args.diagnostics,
         )
         results["chunk_ablation"][name]["chunks"] = len(retriever.chunks)
     print(json.dumps(results, indent=2, sort_keys=True))
